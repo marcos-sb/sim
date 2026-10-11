@@ -1,0 +1,430 @@
+import unittest
+import os
+import sys
+import csv
+import random
+from unittest.mock import patch, MagicMock
+import matplotlib
+import matplotlib.pyplot  # ensure @patch('matplotlib.pyplot') can resolve
+import numpy as np
+
+# Import the module to test
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import simulate
+
+class TestSimulateFunctions(unittest.TestCase):
+    def setUp(self):
+        # Use a fixed seed for reproducibility
+        self.seed = 42
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+
+    def test_simulate_single_trait_length(self):
+        """Test that simulate returns correct number of generations."""
+        pop_size = 20
+        generations = 10
+        avg = simulate.simulate(pop_size=pop_size, generations=generations,
+                                mutation_std=0.0, initial_mean=1.0, initial_std=0.0,
+                                position_std=0.0, position_min=0.0, position_max=1.0)
+        self.assertEqual(len(avg), generations)
+        # With zero mutation and zero initial std, all values should be exactly initial_mean
+        self.assertTrue(all(abs(a - 1.0) < 1e-12 for a in avg))
+
+    def test_simulate_multi_trait_length(self):
+        """Test that simulate_multi returns correct number of generations per trait."""
+        pop_size = 15
+        generations = 7
+        num_traits = 3
+        avg_per_trait = simulate.simulate_multi(pop_size=pop_size, generations=generations,
+                                                num_traits=num_traits,
+                                                init_means=[0.0, 1.0, 2.0],
+                                                init_stds=[0.0, 0.0, 0.0],
+                                                mutation_stds=[0.0, 0.0, 0.0],
+                                                optimum=[0.0, 1.0, 2.0],
+                                                selection_strength=0.0,
+                                                position_std=0.0, position_min=0.0, position_max=1.0)
+        self.assertEqual(len(avg_per_trait), num_traits)
+        for trait_avg in avg_per_trait:
+            self.assertEqual(len(trait_avg), generations)
+        # Check that averages match initial means (since no mutation/variation)
+        expected = [0.0, 1.0, 2.0]
+        for i, trait_avg in enumerate(avg_per_trait):
+            self.assertTrue(all(abs(a - expected[i]) < 1e-12 for a in trait_avg))
+
+    def test_positions_stay_within_bounds(self):
+        """Positions stay within [position_min, position_max] even with large position_std."""
+        positions = []
+        def cb(gen, population):
+            positions.extend((c['pos'][0], c['pos'][1]) for c in population)
+        simulate.simulate(pop_size=20, generations=50, mutation_std=0.0,
+                          initial_mean=1.0, initial_std=0.0,
+                          position_std=5.0, position_min=0.0, position_max=10.0,
+                          plot_callback=None, anim_callback=cb)
+        self.assertTrue(positions)
+        for x, y in positions:
+            self.assertGreaterEqual(x, 0.0)
+            self.assertLessEqual(x, 10.0)
+            self.assertGreaterEqual(y, 0.0)
+            self.assertLessEqual(y, 10.0)
+
+    def test_offspring_traits_come_from_parents(self):
+        """With zero mutation, every trait value must trace back to an initial value (passed on, not blended)."""
+        seen = []
+        def cb(gen, population):
+            seen.append([c['trait'] for c in population])
+        simulate.simulate(pop_size=6, generations=10, mutation_std=0.0,
+                          initial_mean=0.0, initial_std=5.0,
+                          position_std=0.0, position_min=0.0, position_max=1.0,
+                          plot_callback=None, anim_callback=cb)
+        initial = set(seen[0])
+        self.assertGreater(len(initial), 1)
+        for gen_traits in seen[1:]:
+            for t in gen_traits:
+                self.assertIn(t, initial)
+
+    def test_multi_offspring_traits_come_from_parents(self):
+        """With zero mutation, each trait value must trace back to an initial value of that trait."""
+        seen = []
+        def cb(gen, population):
+            seen.append([list(c['traits']) for c in population])
+        simulate.simulate_multi(pop_size=6, generations=10, num_traits=3,
+                                init_means=[0.0, 1.0, 2.0],
+                                init_stds=[5.0, 5.0, 5.0],
+                                mutation_stds=[0.0, 0.0, 0.0],
+                                optimum=[0.0, 1.0, 2.0],
+                                selection_strength=0.0,
+                                position_std=0.0, position_min=0.0, position_max=1.0,
+                                plot_callback=None, anim_callback=cb)
+        initial_vals = [set(v[i] for v in seen[0]) for i in range(3)]
+        self.assertTrue(all(len(s) > 1 for s in initial_vals))
+        for gen in seen[1:]:
+            for traits in gen:
+                for i, t in enumerate(traits):
+                    self.assertIn(t, initial_vals[i])
+
+    def test_offspring_position_is_midpoint_of_parents(self):
+        """With pop_size=2 and zero position mutation, offspring sit at the parents' midpoint (distance-linked interaction)."""
+        calls = []
+        def cb(gen, population):
+            calls.append([c['pos'] for c in population])
+        simulate.simulate(pop_size=2, generations=2, mutation_std=0.0,
+                          initial_mean=1.0, initial_std=0.0,
+                          position_std=0.0, position_min=0.0, position_max=1.0,
+                          plot_callback=None, anim_callback=cb)
+        p0, p1 = calls[0]
+        mid = [(p0[i] + p1[i]) / 2.0 for i in range(2)]
+        for pos in calls[1]:
+            self.assertEqual(pos, mid)
+
+    def test_main_backward_compatibility_creates_csv(self):
+        """Test that main() with default args creates a CSV with correct format."""
+        test_file = 'test_back_compat.csv'
+        # Remove if exists
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        # Backup sys.argv
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--generations', '5', '--pop-size', '8',
+                        '--output', test_file]
+            simulate.main()
+            # Check file exists
+            self.assertTrue(os.path.exists(test_file))
+            # Read CSV
+            with open(test_file, 'r') as f:
+                reader = list(csv.reader(f))
+            # Header
+            self.assertEqual(reader[0], ['generation', 'average_trait'])
+            # Number of rows = generations + 1 (header)
+            self.assertEqual(len(reader), 6)  # 5 generations + header
+            # All rows after header should have 2 columns
+            for row in reader[1:]:
+                self.assertEqual(len(row), 2)
+                # Ensure they are numeric
+                float(row[0])  # generation
+                float(row[1])  # average
+        finally:
+            sys.argv = old_argv
+            if os.path.exists(test_file):
+                os.remove(test_file)
+
+    def test_main_multi_trait_creates_csv(self):
+        """Test that main() with --num-traits creates correct CSV."""
+        test_file = 'test_multi.csv'
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--num-traits', '2',
+                        '--generations', '4', '--pop-size', '6',
+                        '--init-means', '0.0,1.0',
+                        '--init-stds', '0.1,0.1',
+                        '--mutation-stds', '0.05,0.05',
+                        '--optimum', '0.0,1.0',
+                        '--selection-strength', '0.0',
+                        '--output', test_file]
+            simulate.main()
+            self.assertTrue(os.path.exists(test_file))
+            with open(test_file, 'r') as f:
+                reader = list(csv.reader(f))
+            self.assertEqual(reader[0], ['generation', 'trait0_avg', 'trait1_avg'])
+            self.assertEqual(len(reader), 5)  # 4 generations + header
+            for row in reader[1:]:
+                self.assertEqual(len(row), 3)
+                float(row[0]); float(row[1]); float(row[2])
+        finally:
+            sys.argv = old_argv
+            if os.path.exists(test_file):
+                os.remove(test_file)
+
+    @patch('matplotlib.pyplot')
+    def test_live_plot_callback_called(self, mock_plt):
+        """Test that live_plot callback triggers matplotlib calls."""
+        # Mock matplotlib components
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        mock_ax.plot.return_value = [MagicMock()]  # unpackable for `line, = ax.plot(...)`
+        mock_plt.pause = MagicMock()
+        mock_plt.ion = MagicMock()
+        mock_plt.ioff = MagicMock()
+        mock_plt.show = MagicMock()
+        test_file = 'test_lp.csv'
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--live-plot', '--generations', '2',
+                        '--pop-size', '5', '--output', test_file]
+            # window "closes" after 2 generations
+            mock_plt.get_fignums.side_effect = [[1], [1], []]
+            # We need to prevent actual SystemExit from shutting down; but main will not exit.
+            simulate.main()
+            # Ensure plt.ion was called
+            mock_plt.ion.assert_called()
+            # one pause per generation; the run ends when the window closes
+            self.assertEqual(mock_plt.pause.call_count, 2)
+            # Ensure plt.ioff and plt.show called at end
+            mock_plt.ioff.assert_called()
+            mock_plt.show.assert_called()
+        finally:
+            sys.argv = old_argv
+            if os.path.exists(test_file):
+                os.remove(test_file)
+
+    @patch('matplotlib.pyplot')
+    @patch('simulate.np')
+    def test_animate_callback_called_single_trait(self, mock_np, mock_plt):
+        """Test that animate callback works for single-trait mode."""
+        # Configure numpy mock
+        mock_np.array.return_value = np.array([0.1, 0.2])
+        mock_np.min.return_value = 0.1
+        mock_np.max.return_value = 0.2
+        mock_np.zeros_like.return_value = np.array([0.0, 0.0])
+        # Mock viridis colormap
+        mock_viridis = MagicMock()
+        mock_viridis.return_value = np.array([[0.1, 0.2, 0.3, 0.4],
+                                              [0.5, 0.6, 0.7, 0.8]])
+        mock_cm = MagicMock()
+        mock_cm.viridis = mock_viridis
+        mock_plt.cm = mock_cm
+        # Mock matplotlib components
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        mock_plt.pause = MagicMock()
+        mock_plt.ion = MagicMock()
+        mock_plt.ioff = MagicMock()
+        mock_plt.show = MagicMock()
+        # Mock scatter returns an object with set_offsets and set_color
+        mock_scat = MagicMock()
+        mock_ax.scatter.return_value = mock_scat
+        test_file = 'test_an.csv'
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--animate', '--generations', '2',
+                        '--pop-size', '3', '--output', test_file]
+            # window "closes" after 2 generations
+            mock_plt.get_fignums.side_effect = [[1], [1], []]
+            simulate.main()
+            # Check that scatter was created and updated
+            self.assertTrue(mock_ax.scatter.called)
+            # set_offsets and set_color should be called each generation after first
+            # First generation creates scatter, subsequent calls update.
+            # With 2 generations, we expect 1 scatter call, then 1 update for set_offsets and set_color each.
+            self.assertEqual(mock_scat.set_offsets.call_count, 1)
+            self.assertEqual(mock_scat.set_color.call_count, 1)
+            mock_plt.ion.assert_called()
+            self.assertGreaterEqual(mock_plt.pause.call_count, 2)
+            mock_plt.ioff.assert_called()
+            mock_plt.show.assert_called()
+        finally:
+            sys.argv = old_argv
+            if os.path.exists(test_file):
+                os.remove(test_file)
+
+    @patch('matplotlib.pyplot')
+    @patch('simulate.np')
+    def test_animate_fixes_axis_to_position_range(self, mock_np, mock_plt):
+        """--animate pins the axis to [position_min, position_max] once; stray creatures cannot stretch it."""
+        mock_np.array.return_value = np.array([0.1, 0.2])
+        mock_np.min.return_value = 0.1
+        mock_np.max.return_value = 0.2
+        mock_np.zeros_like.return_value = np.array([0.0, 0.0])
+        mock_viridis = MagicMock()
+        mock_viridis.return_value = np.array([[0.1, 0.2, 0.3, 0.4],
+                                              [0.5, 0.6, 0.7, 0.8]])
+        mock_cm = MagicMock()
+        mock_cm.viridis = mock_viridis
+        mock_plt.cm = mock_cm
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        mock_plt.pause = MagicMock()
+        mock_plt.ion = MagicMock()
+        mock_plt.ioff = MagicMock()
+        mock_plt.show = MagicMock()
+        mock_scat = MagicMock()
+        mock_ax.scatter.return_value = mock_scat
+        test_file = 'test_axis.csv'
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--animate', '--generations', '3',
+                        '--pop-size', '5', '--position-min', '0.0',
+                        '--position-max', '10.0', '--output', test_file]
+            # window "closes" after 1 generation
+            mock_plt.get_fignums.side_effect = [[1], []]
+            simulate.main()
+            # axis fixed once to the position range with 5% padding
+            mock_ax.set_xlim.assert_called_once_with(-0.5, 10.5)
+            mock_ax.set_ylim.assert_called_once_with(-0.5, 10.5)
+        finally:
+            sys.argv = old_argv
+            if os.path.exists(test_file):
+                os.remove(test_file)
+
+    def test_widen_scale_only_grows(self):
+        """The fixed color scale only widens, never shrinks."""
+        self.assertEqual(simulate._widen_scale(None, None, [2.0, 8.0]), (2.0, 8.0))
+        self.assertEqual(simulate._widen_scale(2.0, 8.0, [0.0, 5.0]), (0.0, 8.0))
+        self.assertEqual(simulate._widen_scale(0.0, 8.0, [3.0, 4.0]), (0.0, 8.0))
+
+    def test_color_norm_fixed_scale(self):
+        """Normalization against a fixed scale maps identical values to identical colors."""
+        self.assertEqual(simulate._color_norm([1.0, 2.0, 3.0], 1.0, 3.0), [0.0, 0.5, 1.0])
+        self.assertEqual(simulate._color_norm([5.0, 5.0], 5.0, 5.0), [0.0, 0.0])
+
+    def test_move_toward_similar_traits(self):
+        """Similar-trait creatures attract each other; dissimilar ones are left alone."""
+        population = [
+            {'trait': 1.0, 'pos': [0.0, 0.0]},
+            {'trait': 1.0, 'pos': [2.0, 0.0]},
+            {'trait': 9.0, 'pos': [9.0, 9.0]},
+        ]
+        simulate._move_toward_similar(population, similarity_scale=0.5, move_step=0.5,
+                                      position_std=0.0, position_min=0.0, position_max=10.0)
+        # the identical pair meets at its centroid
+        self.assertAlmostEqual(population[0]['pos'][0], 1.0)
+        self.assertAlmostEqual(population[0]['pos'][1], 0.0)
+        self.assertAlmostEqual(population[1]['pos'][0], 1.0)
+        self.assertAlmostEqual(population[1]['pos'][1], 0.0)
+        # the dissimilar creature does not move
+        self.assertAlmostEqual(population[2]['pos'][0], 9.0)
+        self.assertAlmostEqual(population[2]['pos'][1], 9.0)
+
+    def test_move_toward_similar_multi_traits(self):
+        """Multi-trait creatures cluster by trait-space distance."""
+        population = [
+            {'traits': [0.0, 0.0], 'pos': [0.0, 0.0]},
+            {'traits': [0.0, 0.0], 'pos': [2.0, 0.0]},
+            {'traits': [5.0, 5.0], 'pos': [5.0, 5.0]},
+        ]
+        simulate._move_toward_similar(population, similarity_scale=1.0, move_step=0.5,
+                                      position_std=0.0, position_min=0.0, position_max=10.0)
+        self.assertAlmostEqual(population[0]['pos'][0], 1.0)
+        self.assertAlmostEqual(population[1]['pos'][0], 1.0)
+        self.assertAlmostEqual(population[2]['pos'][0], 5.0)
+
+    def test_movement_stays_in_bounds(self):
+        """Movement toward a centroid outside the bounds is clamped."""
+        population = [
+            {'trait': 1.0, 'pos': [0.0, 0.0]},
+            {'trait': 1.0, 'pos': [-5.0, 0.0]},
+        ]
+        simulate._move_toward_similar(population, similarity_scale=0.5, move_step=0.5,
+                                      position_std=0.0, position_min=0.0, position_max=10.0)
+        self.assertEqual(population[0]['pos'][0], 0.0)
+        self.assertEqual(population[1]['pos'][0], 0.0)
+
+    def test_creatures_move_over_generations(self):
+        """Creatures move each generation and stay within bounds."""
+        positions = []
+        def cb(gen, population):
+            positions.append([tuple(c['pos']) for c in population])
+        simulate.simulate(pop_size=10, generations=10, mutation_std=0.0,
+                          initial_mean=1.0, initial_std=0.0,
+                          position_std=0.0, position_min=0.0, position_max=10.0,
+                          similarity_scale=0.5, move_step=0.5,
+                          plot_callback=None, anim_callback=cb)
+        self.assertEqual(len(positions), 10)
+        # identical traits: everyone converges toward the common centroid
+        self.assertNotEqual(positions[0], positions[-1])
+        for frame in positions:
+            for x, y in frame:
+                self.assertGreaterEqual(x, 0.0)
+                self.assertLessEqual(x, 10.0)
+                self.assertGreaterEqual(y, 0.0)
+                self.assertLessEqual(y, 10.0)
+
+    def test_stop_when_ends_simulation_early(self):
+        """A stop_when predicate ends the run even with generations remaining."""
+        checks = []
+        def stop():
+            checks.append(None)
+            return len(checks) >= 4  # stop after 3 generations
+        avg = simulate.simulate(pop_size=5, generations=1000, mutation_std=0.0,
+                                  initial_mean=1.0, initial_std=0.0,
+                                  position_std=0.0, position_min=0.0, position_max=1.0,
+                                  plot_callback=None, anim_callback=None,
+                                  stop_when=stop)
+        self.assertEqual(len(avg), 3)
+
+    def test_stop_when_ends_multi_simulation_early(self):
+        """stop_when also ends multi-trait runs early."""
+        checks = []
+        def stop():
+            checks.append(None)
+            return len(checks) >= 2  # stop after 1 generation
+        result = simulate.simulate_multi(pop_size=4, generations=100, num_traits=2,
+                                          init_means=[0.0, 1.0],
+                                          init_stds=[0.0, 0.0],
+                                          mutation_stds=[0.0, 0.0],
+                                          optimum=[0.0, 1.0],
+                                          selection_strength=0.0,
+                                          position_std=0.0, position_min=0.0, position_max=1.0,
+                                          plot_callback=None, anim_callback=None,
+                                          stop_when=stop)
+        self.assertEqual([len(t) for t in result], [1, 1])
+
+    def test_generations_none_requires_stop_when(self):
+        """generations=None without stop_when is rejected (it would run forever)."""
+        with self.assertRaises(ValueError):
+            simulate.simulate(pop_size=5, generations=None,
+                              initial_mean=1.0, initial_std=0.0)
+
+    def test_missing_required_multi_trait_args(self):
+        """Test that missing --init-means when --num-traits is set triggers error."""
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--num-traits', '2', '--generations', '2']
+            with self.assertRaises(SystemExit):
+                simulate.main()
+        finally:
+            sys.argv = old_argv
+
+if __name__ == '__main__':
+    unittest.main()

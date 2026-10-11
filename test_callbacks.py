@@ -1,0 +1,204 @@
+import unittest
+import os
+import sys
+import csv
+import matplotlib.pyplot  # ensure @patch('matplotlib.pyplot') can resolve
+from unittest.mock import patch, MagicMock
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import simulate
+
+class TestCallbacks(unittest.TestCase):
+    def setUp(self):
+        self.test_output = 'test_output.csv'
+
+    def tearDown(self):
+        if os.path.exists(self.test_output):
+            os.remove(self.test_output)
+
+    def test_simulate_invokes_plot_callback(self):
+        """Test that simulate calls plot_callback each generation."""
+        callbacks = []
+        def cb(gen, averages):
+            callbacks.append((gen, averages.copy()))
+        # Run simulation with zero mutation to keep deterministic
+        simulate.simulate(pop_size=5, generations=3, mutation_std=0.0,
+                          initial_mean=1.0, initial_std=0.0,
+                          position_std=0.0, position_min=0.0, position_max=1.0,
+                          plot_callback=cb, anim_callback=None)
+        # Should have been called for generations 0,1,2
+        self.assertEqual(len(callbacks), 3)
+        self.assertEqual([c[0] for c in callbacks], [0,1,2])
+        # Each averages list should have one element (single trait)
+        for gen, avg_list in callbacks:
+            self.assertEqual(len(avg_list), 1)
+            # Value should be close to 1.0 (no mutation)
+            self.assertAlmostEqual(avg_list[0], 1.0, places=6)
+
+    def test_simulate_multi_invokes_plot_callback(self):
+        """Test that simulate_multi calls plot_callback each generation."""
+        callbacks = []
+        def cb(gen, averages):
+            callbacks.append((gen, averages.copy()))
+        simulate.simulate_multi(pop_size=4, generations=2, num_traits=2,
+                                init_means=[0.0, 2.0],
+                                init_stds=[0.0, 0.0],
+                                mutation_stds=[0.0, 0.0],
+                                optimum=[0.0, 2.0],
+                                selection_strength=0.0,
+                                position_std=0.0, position_min=0.0, position_max=1.0,
+                                plot_callback=cb, anim_callback=None)
+        self.assertEqual(len(callbacks), 2)
+        self.assertEqual([c[0] for c in callbacks], [0,1])
+        for gen, avg_list in callbacks:
+            self.assertEqual(len(avg_list), 2)
+            self.assertAlmostEqual(avg_list[0], 0.0, places=6)
+            self.assertAlmostEqual(avg_list[1], 2.0, places=6)
+
+    def test_simulate_invokes_anim_callback(self):
+        """Test that simulate calls anim_callback each generation with population."""
+        calls = []
+        def cb(gen, population):
+            calls.append((gen, len(population), population[0]['trait']))
+        simulate.simulate(pop_size=3, generations=2, mutation_std=0.0,
+                          initial_mean=5.0, initial_std=0.0,
+                          position_std=0.0, position_min=0.0, position_max=1.0,
+                          plot_callback=None, anim_callback=cb)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([c[0] for c in calls], [0,1])
+        for gen, size, trait0 in calls:
+            self.assertEqual(size, 3)
+            self.assertAlmostEqual(trait0, 5.0, places=6)
+
+    def test_simulate_multi_invokes_anim_callback(self):
+        """Test that simulate_multi calls anim_callback each generation."""
+        calls = []
+        def cb(gen, population):
+            calls.append((gen, len(population), population[0]['traits'].copy()))
+        simulate.simulate_multi(pop_size=2, generations=2, num_traits=2,
+                                init_means=[1.0, 3.0],
+                                init_stds=[0.0, 0.0],
+                                mutation_stds=[0.0, 0.0],
+                                optimum=[1.0, 3.0],
+                                selection_strength=0.0,
+                                position_std=0.0, position_min=0.0, position_max=1.0,
+                                plot_callback=None, anim_callback=cb)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([c[0] for c in calls], [0,1])
+        for gen, size, traits0 in calls:
+            self.assertEqual(size, 2)
+            self.assertAlmostEqual(traits0[0], 1.0, places=6)
+            self.assertAlmostEqual(traits0[1], 3.0, places=6)
+
+    @patch('matplotlib.pyplot')
+    def test_main_live_plot_sets_callback(self, mock_plt):
+        """Test that --live-plot results in a non-None plot_callback being passed."""
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_ax.plot.return_value = [MagicMock()]  # unpackable for `line, = ax.plot(...)`
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        original_simulate = simulate.simulate
+        captured = {}
+        def mock_simulate(*args, **kwargs):
+            captured['plot_callback'] = kwargs.get('plot_callback')
+            # Call original to avoid side effects
+            return original_simulate(*args, **kwargs)
+        # Patch simulate.simulate
+        simulate.simulate = mock_simulate
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--live-plot', '--generations', '1',
+                            '--pop-size', '2', '--output', self.test_output]
+                # window "closes" after 1 generation
+                mock_plt.get_fignums.side_effect = [[1], []]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            self.assertIsNotNone(captured.get('plot_callback'))
+            # Ensure it's callable
+            self.assertTrue(callable(captured['plot_callback']))
+        finally:
+            simulate.simulate = original_simulate
+
+    @patch('matplotlib.pyplot')
+    def test_main_animate_sets_callback(self, mock_plt):
+        """Test that --animate results in a non-None anim_callback being passed."""
+        mock_plt.subplots.return_value = (MagicMock(), MagicMock())
+        original_simulate = simulate.simulate
+        captured = {}
+        def mock_simulate(*args, **kwargs):
+            captured['anim_callback'] = kwargs.get('anim_callback')
+            return original_simulate(*args, **kwargs)
+        simulate.simulate = mock_simulate
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--animate', '--generations', '1',
+                            '--pop-size', '2', '--output', self.test_output]
+                # window "closes" after 1 generation
+                mock_plt.get_fignums.side_effect = [[1], []]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            self.assertIsNotNone(captured.get('anim_callback'))
+            self.assertTrue(callable(captured['anim_callback']))
+        finally:
+            simulate.simulate = original_simulate
+
+    @patch('matplotlib.pyplot')
+    def test_main_both_flags_set_both_callbacks(self, mock_plt):
+        """Test that --live-plot and --animate together set both callbacks."""
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_ax.plot.return_value = [MagicMock()]  # unpackable for `line, = ax.plot(...)`
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        original_simulate = simulate.simulate
+        captured = {'plot': None, 'anim': None}
+        def mock_simulate(*args, **kwargs):
+            captured['plot'] = kwargs.get('plot_callback')
+            captured['anim'] = kwargs.get('anim_callback')
+            return original_simulate(*args, **kwargs)
+        simulate.simulate = mock_simulate
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--live-plot', '--animate',
+                            '--generations', '1', '--pop-size', '2',
+                            '--output', self.test_output]
+                # window "closes" after 1 generation
+                mock_plt.get_fignums.side_effect = [[1], []]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            self.assertIsNotNone(captured['plot'])
+            self.assertIsNotNone(captured['anim'])
+            self.assertTrue(callable(captured['plot']))
+            self.assertTrue(callable(captured['anim']))
+        finally:
+            simulate.simulate = original_simulate
+
+    def test_main_without_flags_sets_no_callbacks(self):
+        """Test that without flags, callbacks are None."""
+        original_simulate = simulate.simulate
+        captured = {'plot': None, 'anim': None}
+        def mock_simulate(*args, **kwargs):
+            captured['plot'] = kwargs.get('plot_callback')
+            captured['anim'] = kwargs.get('anim_callback')
+            return original_simulate(*args, **kwargs)
+        simulate.simulate = mock_simulate
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--generations', '1',
+                            '--pop-size', '2', '--output', self.test_output]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            self.assertIsNone(captured['plot'])
+            self.assertIsNone(captured['anim'])
+        finally:
+            simulate.simulate = original_simulate
+
+if __name__ == '__main__':
+    unittest.main()
