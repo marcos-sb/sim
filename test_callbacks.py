@@ -273,5 +273,58 @@ class TestCallbacks(unittest.TestCase):
         finally:
             simulate.simulate = original_simulate
 
+    @patch('matplotlib.pyplot')
+    def test_main_animate_renders_elements(self, mock_plt):
+        """Test that --animate --elements draws markers and circles."""
+        mock_ax = MagicMock()
+        mock_plt.subplots.return_value = (MagicMock(), mock_ax)
+        original_simulate = simulate.simulate
+        captured = {}
+        def mock_simulate(*args, **kwargs):
+            # do not run the real simulation: keep the anim_callback
+            # closure fresh (scat/elem_scat still None) so the
+            # first-frame drawing path is exercised below
+            captured['anim_callback'] = kwargs.get('anim_callback')
+            return [1.0]
+        simulate.simulate = mock_simulate
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--animate', '--elements',
+                            '--element-rate', '3', '--element-boost', '0.2',
+                            '--generations', '1', '--pop-size', '2',
+                            '--output', self.test_output]
+                mock_plt.get_fignums.side_effect = [[1], []]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            anim_callback = captured['anim_callback']
+            self.assertTrue(callable(anim_callback))
+            # first frame: creature scatter + element scatter + legend
+            mock_ax.scatter.reset_mock()
+            mock_ax.legend.reset_mock()
+            mock_ax.add_patch.reset_mock()
+            population = [{'trait': 1.0, 'pos': [1.0, 1.0]},
+                          {'trait': 2.0, 'pos': [2.0, 2.0]}]
+            elements = [{'pos': [1.5, 1.5], 'trait': 0, 'radius': 1.0,
+                         'boost': 0.2, 'lifetime': 5},
+                        {'pos': [3.0, 3.0], 'trait': 0, 'radius': 1.0,
+                         'boost': -0.1, 'lifetime': 5}]
+            anim_callback(0, population, elements)
+            self.assertEqual(mock_ax.scatter.call_count, 2)
+            elem_call = mock_ax.scatter.call_args_list[1]
+            self.assertEqual(elem_call.kwargs['marker'], 'x')
+            # marker size encodes the bonus: 50 + 200 * |boost|
+            self.assertEqual(list(elem_call.kwargs['s']), [90.0, 70.0])
+            self.assertTrue(mock_ax.legend.called)
+            self.assertEqual(mock_ax.add_patch.call_count, 2)
+            # second frame: the element scatter is updated in place
+            anim_callback(1, population, elements)
+            self.assertTrue(mock_ax.scatter.return_value.set_sizes.called)
+            self.assertEqual(mock_ax.scatter.call_count, 2)
+            self.assertEqual(mock_ax.add_patch.call_count, 4)
+        finally:
+            simulate.simulate = original_simulate
+
 if __name__ == '__main__':
     unittest.main()

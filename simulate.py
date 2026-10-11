@@ -454,6 +454,7 @@ def main():
             import matplotlib.pyplot as plt
             from matplotlib import cm
             from matplotlib.patches import Circle
+            from matplotlib.lines import Line2D
         except ImportError:
             sys.exit("Error: matplotlib is required for --animate. Install it with 'pip install matplotlib'.")
         # If still non-interactive, we cannot show animation; warn and disable
@@ -538,18 +539,33 @@ def main():
                 else:
                     scat.set_offsets(np.column_stack([xs, ys]))
                     scat.set_color(colors)
-                # Draw map elements: 'x' markers colored by the trait
-                # they boost, with a dotted circle showing the radius
+                # Draw map elements: 'x' markers colored by the
+                # trait they boost and sized by the boost, with a
+                # dotted circle showing the radius
                 if elements:
                     exs = [e['pos'][0] for e in elements]
                     eys = [e['pos'][1] for e in elements]
                     ecolors = [cm.tab10(e['trait'] % 10) for e in elements]
+                    esizes = [50 + 200 * abs(e['boost']) for e in elements]
                     if elem_scat is None:
-                        elem_scat = ax.scatter(exs, eys, c=ecolors, marker='x',
-                                               s=80, linewidths=2)
+                        elem_scat = ax.scatter(exs, eys, c=ecolors,
+                                               s=esizes, marker='x',
+                                               linewidths=2)
+                        ax.legend(handles=[
+                            Line2D([0], [0], marker='x', color='w',
+                                   markerfacecolor='gray', markersize=8,
+                                   linestyle='None',
+                                   label='element (color = trait, size = |boost|)'),
+                            Line2D([0], [0], marker='o', color='w',
+                                   markerfacecolor='none',
+                                   markeredgecolor='gray', markersize=10,
+                                   linestyle=':',
+                                   label='effect radius')],
+                            loc='upper right', fontsize=8, framealpha=0.7)
                     else:
                         elem_scat.set_offsets(np.column_stack([exs, eys]))
                         elem_scat.set_color(ecolors)
+                        elem_scat.set_sizes(esizes)
                     for circle in elem_circles:
                         circle.remove()
                     elem_circles.clear()
