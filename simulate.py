@@ -137,10 +137,45 @@ def _color_norm(values, vmin, vmax):
         return [0.0] * len(values)
     return [(v - vmin) / (vmax - vmin) for v in values]
 
+def _population_stats(population):
+    """Per-generation stats: per-trait averages and standard
+    deviations, and the mean pairwise distance between creatures."""
+    if 'trait' in population[0]:
+        # single trait mode
+        columns = [[c['trait'] for c in population]]
+    else:
+        # multi-trait mode
+        num_traits = len(population[0]['traits'])
+        columns = [[c['traits'][k] for c in population]
+                   for k in range(num_traits)]
+    averages = []
+    stds = []
+    for values in columns:
+        mean = sum(values) / len(values)
+        var = sum((v - mean) ** 2 for v in values) / len(values)
+        averages.append(mean)
+        stds.append(math.sqrt(var))
+    spread = 0.0
+    count = 0
+    for i in range(len(population)):
+        for j in range(i + 1, len(population)):
+            spread += math.dist(population[i]['pos'], population[j]['pos'])
+            count += 1
+    if count > 0:
+        spread /= count
+    return {'averages': averages, 'stds': stds, 'spread': spread}
+
+def _format_stats(gen, stats):
+    """One text block for the plot window: generation, per-trait
+    averages and stds, and the mean pairwise distance."""
+    avg = ', '.join(f'{v:.4f}' for v in stats['averages'])
+    std = ', '.join(f'{v:.4f}' for v in stats['stds'])
+    return f'gen {gen}\navg {avg}\nstd {std}\nspread {stats["spread"]:.2f}'
+
 def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0, initial_std=0.1,
              position_std=0.05, position_min=0.0, position_max=10.0,
              similarity_scale=0.5, move_step=0.1,
-             plot_callback=None, anim_callback=None, stop_when=None):
+             plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
     # Initialize population
@@ -156,6 +191,8 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
             break
         avg = sum(c['trait'] for c in population) / len(population)
         averages.append(avg)
+        if stats_callback:
+            stats_callback(gen, _population_stats(population))
         if plot_callback:
             plot_callback(gen, [avg])
         if anim_callback:
@@ -189,7 +226,7 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                    mutation_stds=None, optimum=None, selection_strength=0.0,
                    position_std=0.05, position_min=0.0, position_max=10.0,
                    similarity_scale=0.5, move_step=0.1,
-                   plot_callback=None, anim_callback=None, stop_when=None):
+                   plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
     # Initialize population: list of creatures, each creature is dict with traits list and pos
@@ -208,6 +245,8 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
         for i in range(num_traits):
             trait_avg = sum(c['traits'][i] for c in population) / pop_size
             averages_per_trait[i].append(trait_avg)
+        if stats_callback:
+            stats_callback(gen, _population_stats(population))
         if plot_callback:
             plot_callback(gen, [averages_per_trait[i][gen] for i in range(num_traits)])
         if anim_callback:
@@ -283,6 +322,7 @@ def main():
     plt_module = None
     show_plot = False
     plot_callback = None
+    stats_texts = []  # text boxes showing live stats, one per plot window
     
     # Prepare live plot (line chart) if requested
     if args.live_plot:
@@ -297,6 +337,10 @@ def main():
         lines = []
         gen_data = []
         trait_data = []  # list of lists per trait
+        stats_texts.append(ax.text(0.02, 0.98, '', transform=ax.transAxes,
+                                        va='top', family='monospace', fontsize=9,
+                                        bbox=dict(boxstyle='round', facecolor='white',
+                                                  alpha=0.7, edgecolor='none')))
         def plot_callback(gen, averages):
             gen_data.append(gen)
             if not trait_data:
@@ -352,6 +396,10 @@ def main():
                 pad = 0.5
             ax.set_xlim(args.position_min - pad, args.position_max + pad)
             ax.set_ylim(args.position_min - pad, args.position_max + pad)
+            stats_texts.append(ax.text(0.02, 0.98, '', transform=ax.transAxes,
+                                            va='top', family='monospace', fontsize=9,
+                                            bbox=dict(boxstyle='round', facecolor='white',
+                                                      alpha=0.7, edgecolor='none')))
             scat = None  # will initialize on first callback
             # Fixed color scales: running min/max per trait channel that only
             # widen, so a creature's color depends on its trait value alone
@@ -416,6 +464,13 @@ def main():
                 plt.pause(args.interval)
     else:
         anim_callback = None
+    stats_cb = None
+    if stats_texts:
+        def stats_callback(gen, stats):
+            line = _format_stats(gen, stats)
+            for text in stats_texts:
+                text.set_text(line)
+        stats_cb = stats_callback
     
     # With a visible plot window, keep simulating until the user closes it;
     # otherwise cap the run at the requested generation count
@@ -451,7 +506,8 @@ def main():
                             move_step=args.move_step,
                             plot_callback=plot_callback,
                             stop_when=stop_when,
-                            anim_callback=anim_callback)
+                            anim_callback=anim_callback,
+                            stats_callback=stats_cb)
         # Write CSV with single column
         with open(args.output, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -500,7 +556,8 @@ def main():
                                             move_step=args.move_step,
                                             plot_callback=plot_callback,
                                             stop_when=stop_when,
-                                            anim_callback=anim_callback)
+                                            anim_callback=anim_callback,
+                                            stats_callback=stats_cb)
         # Write CSV with columns for each trait
         with open(args.output, 'w', newline='') as f:
             writer = csv.writer(f)

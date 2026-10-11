@@ -2,6 +2,7 @@ import unittest
 import os
 import sys
 import csv
+import math
 import random
 from unittest.mock import patch, MagicMock
 import matplotlib
@@ -425,6 +426,72 @@ class TestSimulateFunctions(unittest.TestCase):
                 simulate.main()
         finally:
             sys.argv = old_argv
+
+    def test_population_stats(self):
+        """_population_stats computes averages, stds, and mean spread."""
+        population = [
+            {'trait': 1.0, 'pos': [0.0, 0.0]},
+            {'trait': 2.0, 'pos': [3.0, 0.0]},
+            {'trait': 3.0, 'pos': [0.0, 4.0]},
+        ]
+        stats = simulate._population_stats(population)
+        self.assertEqual(stats['averages'], [2.0])
+        self.assertAlmostEqual(stats['stds'][0], math.sqrt(2.0 / 3.0), places=7)
+        # pair distances are 3, 4, and 5
+        self.assertAlmostEqual(stats['spread'], 4.0, places=7)
+
+    def test_population_stats_multi(self):
+        """_population_stats handles multi-trait populations."""
+        population = [
+            {'traits': [1.0, 0.0], 'pos': [0.0, 0.0]},
+            {'traits': [2.0, 1.0], 'pos': [3.0, 0.0]},
+            {'traits': [3.0, 2.0], 'pos': [0.0, 4.0]},
+        ]
+        stats = simulate._population_stats(population)
+        self.assertEqual(stats['averages'], [2.0, 1.0])
+        for std in stats['stds']:
+            self.assertAlmostEqual(std, math.sqrt(2.0 / 3.0), places=7)
+        self.assertAlmostEqual(stats['spread'], 4.0, places=7)
+
+    def test_format_stats(self):
+        """_format_stats renders the stats text block."""
+        text = simulate._format_stats(5, {'averages': [1.0], 'stds': [0.5],
+                                          'spread': 1.234})
+        self.assertEqual(text, 'gen 5\navg 1.0000\nstd 0.5000\nspread 1.23')
+
+    def test_stats_callback_receives_stats(self):
+        """stats_callback is called each generation with the stats dict."""
+        calls = []
+        def cb(gen, stats):
+            calls.append((gen, stats))
+        simulate.simulate(pop_size=5, generations=3, mutation_std=0.0,
+                          initial_mean=1.0, initial_std=0.0,
+                          position_std=0.0, position_min=0.0, position_max=1.0,
+                          plot_callback=None, anim_callback=None,
+                          stats_callback=cb)
+        self.assertEqual([gen for gen, _ in calls], [0, 1, 2])
+        for _, stats in calls:
+            self.assertEqual(stats['averages'], [1.0])
+            self.assertEqual(stats['stds'], [0.0])
+            self.assertGreaterEqual(stats['spread'], 0.0)
+
+    def test_stats_callback_multi(self):
+        """stats_callback also fires for multi-trait runs."""
+        calls = []
+        def cb(gen, stats):
+            calls.append((gen, stats))
+        simulate.simulate_multi(pop_size=5, generations=3, num_traits=2,
+                                init_means=[0.0, 2.0], init_stds=[0.0, 0.0],
+                                mutation_stds=[0.0, 0.0], optimum=[0.0, 2.0],
+                                selection_strength=0.0,
+                                position_std=0.0, position_min=0.0,
+                                position_max=1.0,
+                                plot_callback=None, anim_callback=None,
+                                stats_callback=cb)
+        self.assertEqual([gen for gen, _ in calls], [0, 1, 2])
+        for _, stats in calls:
+            self.assertEqual(stats['averages'], [0.0, 2.0])
+            self.assertEqual(stats['stds'], [0.0, 0.0])
 
 if __name__ == '__main__':
     unittest.main()

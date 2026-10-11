@@ -147,6 +147,40 @@ class TestCallbacks(unittest.TestCase):
             simulate.simulate = original_simulate
 
     @patch('matplotlib.pyplot')
+    def test_main_animate_sets_stats_text(self, mock_plt):
+        """Test that --animate adds a stats text box updated per generation."""
+        mock_ax = MagicMock()
+        mock_plt.subplots.return_value = (MagicMock(), mock_ax)
+        original_simulate = simulate.simulate
+        captured = {}
+        def mock_simulate(*args, **kwargs):
+            captured['stats_callback'] = kwargs.get('stats_callback')
+            return original_simulate(*args, **kwargs)
+        simulate.simulate = mock_simulate
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--animate', '--generations', '1',
+                            '--pop-size', '2', '--output', self.test_output]
+                # window "closes" after 1 generation
+                mock_plt.get_fignums.side_effect = [[1], []]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            self.assertTrue(mock_ax.text.called)
+            self.assertIsNotNone(captured.get('stats_callback'))
+            self.assertTrue(callable(captured['stats_callback']))
+            # the real run already updated the text once; drive the
+            # captured callback with known stats to check formatting
+            mock_ax.text.return_value.set_text.reset_mock()
+            captured['stats_callback'](0, {'averages': [1.0], 'stds': [0.0],
+                                           'spread': 1.0})
+            mock_ax.text.return_value.set_text.assert_called_once_with(
+                'gen 0\navg 1.0000\nstd 0.0000\nspread 1.00')
+        finally:
+            simulate.simulate = original_simulate
+
+    @patch('matplotlib.pyplot')
     def test_main_both_flags_set_both_callbacks(self, mock_plt):
         """Test that --live-plot and --animate together set both callbacks."""
         mock_fig = MagicMock()
@@ -181,10 +215,11 @@ class TestCallbacks(unittest.TestCase):
     def test_main_without_flags_sets_no_callbacks(self):
         """Test that without flags, callbacks are None."""
         original_simulate = simulate.simulate
-        captured = {'plot': None, 'anim': None}
+        captured = {'plot': None, 'anim': None, 'stats': None}
         def mock_simulate(*args, **kwargs):
             captured['plot'] = kwargs.get('plot_callback')
             captured['anim'] = kwargs.get('anim_callback')
+            captured['stats'] = kwargs.get('stats_callback')
             return original_simulate(*args, **kwargs)
         simulate.simulate = mock_simulate
         try:
@@ -197,6 +232,7 @@ class TestCallbacks(unittest.TestCase):
                 sys.argv = old_argv
             self.assertIsNone(captured['plot'])
             self.assertIsNone(captured['anim'])
+            self.assertIsNone(captured['stats'])
         finally:
             simulate.simulate = original_simulate
 
