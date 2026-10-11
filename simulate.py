@@ -170,12 +170,57 @@ def _format_stats(gen, stats):
     averages and stds, and the mean pairwise distance."""
     avg = ', '.join(f'{v:.4f}' for v in stats['averages'])
     std = ', '.join(f'{v:.4f}' for v in stats['stds'])
-    return f'gen {gen}\navg {avg}\nstd {std}\nspread {stats["spread"]:.2f}'
+    text = f'gen {gen}\navg {avg}\nstd {std}\nspread {stats["spread"]:.2f}'
+    if 'elements' in stats:
+        text += f'\nelements {stats["elements"]}'
+    return text
+
+def _update_elements(population, elements, num_traits, rate, radius,
+                     boost, lifetime, position_min, position_max,
+                     element_max):
+    """Age map elements, spawn new ones, and boost creatures near them.
+
+    Each element raises the trait it targets for creatures within its
+    radius; the boost is strongest at the center and falls off
+    linearly to zero at the edge. Elements expire after `lifetime`
+    generations and up to `element_max` exist at once.
+    """
+    for element in elements:
+        element['lifetime'] -= 1
+    elements[:] = [e for e in elements if e['lifetime'] > 0]
+    # spawn: expected `rate` new elements per generation
+    n = int(rate)
+    if random.random() < rate - n:
+        n += 1
+    for _ in range(n):
+        while len(elements) >= element_max and elements:
+            elements.pop(0)  # oldest first
+        if len(elements) < element_max:
+            elements.append({
+                'pos': [random.uniform(position_min, position_max)
+                        for _ in range(2)],
+                'trait': random.randrange(num_traits),
+                'radius': radius,
+                'boost': boost,
+                'lifetime': lifetime,
+            })
+    # apply boosts with linear falloff inside the radius
+    for creature in population:
+        for element in elements:
+            d = math.dist(creature['pos'], element['pos'])
+            if d < element['radius']:
+                amount = element['boost'] * (1.0 - d / element['radius'])
+                if 'trait' in creature:
+                    creature['trait'] += amount
+                else:
+                    creature['traits'][element['trait']] += amount
 
 def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0, initial_std=0.1,
              position_std=0.05, position_min=0.0, position_max=10.0,
              similarity_scale=0.5, move_step=0.1,
-             plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None):
+             plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
+             elements=False, element_rate=1.0, element_radius=1.0,
+             element_boost=0.05, element_lifetime=20, element_max=50):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
     # Initialize population
@@ -185,18 +230,29 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
         pos = [random.uniform(position_min, position_max) for _ in range(2)]
         population.append({'trait': trait, 'pos': pos})
     averages = []
+    element_list = []  # active map elements
     gen = 0
     while generations is None or gen < generations:
         if stop_when is not None and stop_when():
             break
+        if elements:
+            _update_elements(population, element_list, 1, element_rate,
+                             element_radius, element_boost, element_lifetime,
+                             position_min, position_max, element_max)
         avg = sum(c['trait'] for c in population) / len(population)
         averages.append(avg)
         if stats_callback:
-            stats_callback(gen, _population_stats(population))
+            stats = _population_stats(population)
+            if elements:
+                stats['elements'] = len(element_list)
+            stats_callback(gen, stats)
         if plot_callback:
             plot_callback(gen, [avg])
         if anim_callback:
-            anim_callback(gen, population)
+            if elements:
+                anim_callback(gen, population, element_list)
+            else:
+                anim_callback(gen, population)
         # Reproduce: each creature interacts with its nearest neighbour
         # (distance-based interaction); the offspring inherits one parent's
         # trait and is placed between the two parents, then mutates
@@ -226,7 +282,9 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                    mutation_stds=None, optimum=None, selection_strength=0.0,
                    position_std=0.05, position_min=0.0, position_max=10.0,
                    similarity_scale=0.5, move_step=0.1,
-                   plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None):
+                   plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
+                   elements=False, element_rate=1.0, element_radius=1.0,
+                   element_boost=0.05, element_lifetime=20, element_max=50):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
     # Initialize population: list of creatures, each creature is dict with traits list and pos
@@ -237,20 +295,32 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
         population.append({'traits': traits, 'pos': pos})
     # We'll track averages per trait per generation
     averages_per_trait = [[] for _ in range(num_traits)]
+    element_list = []  # active map elements
     gen = 0
     while generations is None or gen < generations:
         if stop_when is not None and stop_when():
             break
+        if elements:
+            _update_elements(population, element_list, num_traits,
+                             element_rate, element_radius, element_boost,
+                             element_lifetime, position_min, position_max,
+                             element_max)
         # compute average per trait
         for i in range(num_traits):
             trait_avg = sum(c['traits'][i] for c in population) / pop_size
             averages_per_trait[i].append(trait_avg)
         if stats_callback:
-            stats_callback(gen, _population_stats(population))
+            stats = _population_stats(population)
+            if elements:
+                stats['elements'] = len(element_list)
+            stats_callback(gen, stats)
         if plot_callback:
             plot_callback(gen, [averages_per_trait[i][gen] for i in range(num_traits)])
         if anim_callback:
-            anim_callback(gen, population)
+            if elements:
+                anim_callback(gen, population, element_list)
+            else:
+                anim_callback(gen, population)
         # Reproduce: each creature interacts with its nearest neighbour
         # (distance-based interaction); each trait is inherited from one of
         # the two parents, and the offspring is placed between the parents
@@ -314,6 +384,12 @@ def main():
     parser.add_argument('--similarity-scale', type=float, default=0.5, help='Similarity radius in population standard deviations (creatures farther apart than 2x this do not attract)')
     parser.add_argument('--move-step', type=float, default=0.1, help='Fraction of the distance moved toward similar creatures per generation')
     parser.add_argument('--interval', type=float, default=0.05, help='Seconds between generations when a plot is shown (animation speed)')
+    parser.add_argument('--elements', action='store_true', help='Scatter random elements on the map that boost a trait of nearby creatures')
+    parser.add_argument('--element-rate', type=float, default=1.0, help='Expected number of new elements per generation')
+    parser.add_argument('--element-radius', type=float, default=1.0, help="Radius of each element's effect")
+    parser.add_argument('--element-boost', type=float, default=0.05, help='Per-generation trait boost at an element center (linear falloff to 0 at the edge; negative values harm)')
+    parser.add_argument('--element-lifetime', type=int, default=20, help='Generations each element persists')
+    parser.add_argument('--element-max', type=int, default=50, help='Maximum simultaneous elements (oldest removed first)')
     
     parser.add_argument('--live-plot', action='store_true', help='Show trait evolution in real time (line chart)')
     parser.add_argument('--animate', action='store_true', help='Show real-time animation of positions colored by traits')
@@ -377,6 +453,7 @@ def main():
         try:
             import matplotlib.pyplot as plt
             from matplotlib import cm
+            from matplotlib.patches import Circle
         except ImportError:
             sys.exit("Error: matplotlib is required for --animate. Install it with 'pip install matplotlib'.")
         # If still non-interactive, we cannot show animation; warn and disable
@@ -401,6 +478,8 @@ def main():
                                             bbox=dict(boxstyle='round', facecolor='white',
                                                       alpha=0.7, edgecolor='none')))
             scat = None  # will initialize on first callback
+            elem_scat = None  # element scatter, init on first callback
+            elem_circles = []  # radius circles, redrawn each frame
             # Fixed color scales: running min/max per trait channel that only
             # widen, so a creature's color depends on its trait value alone
             # (similar traits get similar colors across the whole animation)
@@ -408,8 +487,8 @@ def main():
             trait_vmax = None
             rgb_mins = None
             rgb_maxs = None
-            def anim_callback(gen, population):
-                nonlocal scat, trait_vmin, trait_vmax, rgb_mins, rgb_maxs
+            def anim_callback(gen, population, elements=None):
+                nonlocal scat, trait_vmin, trait_vmax, rgb_mins, rgb_maxs, elem_scat
                 # Extract positions
                 xs = [c['pos'][0] for c in population]
                 ys = [c['pos'][1] for c in population]
@@ -459,6 +538,26 @@ def main():
                 else:
                     scat.set_offsets(np.column_stack([xs, ys]))
                     scat.set_color(colors)
+                # Draw map elements: 'x' markers colored by the trait
+                # they boost, with a dotted circle showing the radius
+                if elements:
+                    exs = [e['pos'][0] for e in elements]
+                    eys = [e['pos'][1] for e in elements]
+                    ecolors = [cm.tab10(e['trait'] % 10) for e in elements]
+                    if elem_scat is None:
+                        elem_scat = ax.scatter(exs, eys, c=ecolors, marker='x',
+                                               s=80, linewidths=2)
+                    else:
+                        elem_scat.set_offsets(np.column_stack([exs, eys]))
+                        elem_scat.set_color(ecolors)
+                    for circle in elem_circles:
+                        circle.remove()
+                    elem_circles.clear()
+                    for e in elements:
+                        elem_circles.append(ax.add_patch(Circle(
+                            e['pos'], e['radius'], fill=False, linestyle=':',
+                            linewidth=1, color=cm.tab10(e['trait'] % 10),
+                            alpha=0.35)))
                 # Axis limits are fixed above: positions are clamped to the
                 # configured range, so per-frame min/max rescaling is unnecessary
                 plt.pause(args.interval)
@@ -507,6 +606,12 @@ def main():
                             plot_callback=plot_callback,
                             stop_when=stop_when,
                             anim_callback=anim_callback,
+                            elements=args.elements,
+                            element_rate=args.element_rate,
+                            element_radius=args.element_radius,
+                            element_boost=args.element_boost,
+                            element_lifetime=args.element_lifetime,
+                            element_max=args.element_max,
                             stats_callback=stats_cb)
         # Write CSV with single column
         with open(args.output, 'w', newline='') as f:
@@ -557,6 +662,12 @@ def main():
                                             plot_callback=plot_callback,
                                             stop_when=stop_when,
                                             anim_callback=anim_callback,
+                                            elements=args.elements,
+                                            element_rate=args.element_rate,
+                                            element_radius=args.element_radius,
+                                            element_boost=args.element_boost,
+                                            element_lifetime=args.element_lifetime,
+                                            element_max=args.element_max,
                                             stats_callback=stats_cb)
         # Write CSV with columns for each trait
         with open(args.output, 'w', newline='') as f:

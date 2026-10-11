@@ -493,5 +493,109 @@ class TestSimulateFunctions(unittest.TestCase):
             self.assertEqual(stats['averages'], [0.0, 2.0])
             self.assertEqual(stats['stds'], [0.0, 0.0])
 
+    def test_update_elements_boosts_nearby_creatures(self):
+        """Elements boost the trait of creatures within their radius."""
+        population = [
+            {'trait': 1.0, 'pos': [5.0, 5.0]},  # at the center
+            {'trait': 1.0, 'pos': [6.0, 5.0]},  # halfway to the edge
+            {'trait': 1.0, 'pos': [0.0, 0.0]},  # outside the radius
+        ]
+        elements = [{'pos': [5.0, 5.0], 'trait': 0, 'radius': 2.0,
+                     'boost': 0.1, 'lifetime': 5}]
+        simulate._update_elements(population, elements, num_traits=1,
+                                    rate=0.0, radius=2.0, boost=0.1,
+                                    lifetime=5, position_min=0.0,
+                                    position_max=10.0, element_max=50)
+        self.assertAlmostEqual(population[0]['trait'], 1.1, places=7)
+        self.assertAlmostEqual(population[1]['trait'], 1.05, places=7)
+        self.assertAlmostEqual(population[2]['trait'], 1.0, places=7)
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]['lifetime'], 4)
+
+    def test_update_elements_expire_and_spawn(self):
+        """Elements expire after their lifetime and new ones spawn."""
+        population = []
+        elements = [{'pos': [5.0, 5.0], 'trait': 0, 'radius': 1.0,
+                     'boost': 0.1, 'lifetime': 1}]
+        simulate._update_elements(population, elements, num_traits=2,
+                                    rate=2.0, radius=1.0, boost=0.1,
+                                    lifetime=7, position_min=0.0,
+                                    position_max=10.0, element_max=50)
+        # the lifetime-1 element expired; exactly 2 new ones spawned
+        self.assertEqual(len(elements), 2)
+        for element in elements:
+            self.assertIn(element['trait'], (0, 1))
+            self.assertEqual(element['radius'], 1.0)
+            self.assertEqual(element['boost'], 0.1)
+            self.assertEqual(element['lifetime'], 7)
+            for coord in element['pos']:
+                self.assertGreaterEqual(coord, 0.0)
+                self.assertLessEqual(coord, 10.0)
+
+    def test_update_elements_max_cap(self):
+        """The element cap drops the oldest elements first."""
+        elements = [{'pos': [1.0, 1.0], 'trait': 0, 'radius': 1.0,
+                     'boost': 0.1, 'lifetime': 10} for _ in range(3)]
+        simulate._update_elements([], elements, num_traits=1, rate=5.0,
+                                    radius=1.0, boost=0.1, lifetime=10,
+                                    position_min=0.0, position_max=10.0,
+                                    element_max=2)
+        self.assertEqual(len(elements), 2)
+
+    def test_simulate_elements_stats_callback(self):
+        """simulate reports the active element count in stats."""
+        calls = []
+        def cb(gen, stats):
+            calls.append((gen, stats))
+        simulate.simulate(pop_size=5, generations=3, mutation_std=0.0,
+                          initial_mean=1.0, initial_std=0.0,
+                          position_std=0.0, position_min=0.0,
+                          position_max=1.0, elements=True,
+                          element_rate=10.0, element_radius=0.5,
+                          element_boost=0.05, element_lifetime=20,
+                          element_max=50,
+                          plot_callback=None, anim_callback=None,
+                          stats_callback=cb)
+        self.assertEqual([gen for gen, _ in calls], [0, 1, 2])
+        # elements accumulate: 10 spawn per generation and none
+        # expire within 3 generations (lifetime 20)
+        self.assertEqual([stats['elements'] for _, stats in calls],
+                         [10, 20, 30])
+
+    def test_simulate_multi_elements_stats_callback(self):
+        """simulate_multi reports the active element count in stats."""
+        calls = []
+        def cb(gen, stats):
+            calls.append((gen, stats))
+        simulate.simulate_multi(pop_size=5, generations=3, num_traits=3,
+                                init_means=[0.0, 1.0, 2.0],
+                                init_stds=[0.0, 0.0, 0.0],
+                                mutation_stds=[0.0, 0.0, 0.0],
+                                optimum=[0.0, 1.0, 2.0],
+                                selection_strength=0.0,
+                                position_std=0.0, position_min=0.0,
+                                position_max=1.0, elements=True,
+                                element_rate=10.0, element_radius=0.5,
+                                element_boost=0.05, element_lifetime=20,
+                                element_max=50,
+                                plot_callback=None, anim_callback=None,
+                                stats_callback=cb)
+        self.assertEqual([gen for gen, _ in calls], [0, 1, 2])
+        # elements accumulate: 10 spawn per generation and none
+        # expire within 3 generations (lifetime 20)
+        self.assertEqual([stats['elements'] for _, stats in calls],
+                         [10, 20, 30])
+        for _, stats in calls:
+            self.assertEqual(len(stats['averages']), 3)
+
+    def test_format_stats_with_elements(self):
+        """_format_stats appends the element count when present."""
+        stats = {'averages': [1.0], 'stds': [0.5], 'spread': 1.0,
+                 'elements': 7}
+        text = simulate._format_stats(2, stats)
+        self.assertEqual(text,
+                         'gen 2\navg 1.0000\nstd 0.5000\nspread 1.00\n'
+                         'elements 7')
+
 if __name__ == '__main__':
     unittest.main()

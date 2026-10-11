@@ -215,11 +215,13 @@ class TestCallbacks(unittest.TestCase):
     def test_main_without_flags_sets_no_callbacks(self):
         """Test that without flags, callbacks are None."""
         original_simulate = simulate.simulate
-        captured = {'plot': None, 'anim': None, 'stats': None}
+        captured = {'plot': None, 'anim': None, 'stats': None,
+                    'elements': None}
         def mock_simulate(*args, **kwargs):
             captured['plot'] = kwargs.get('plot_callback')
             captured['anim'] = kwargs.get('anim_callback')
             captured['stats'] = kwargs.get('stats_callback')
+            captured['elements'] = kwargs.get('elements')
             return original_simulate(*args, **kwargs)
         simulate.simulate = mock_simulate
         try:
@@ -233,6 +235,41 @@ class TestCallbacks(unittest.TestCase):
             self.assertIsNone(captured['plot'])
             self.assertIsNone(captured['anim'])
             self.assertIsNone(captured['stats'])
+            self.assertFalse(captured['elements'])
+        finally:
+            simulate.simulate = original_simulate
+
+    @patch('matplotlib.pyplot')
+    def test_main_elements_pass_config(self, mock_plt):
+        """Test that --elements forwards the element configuration."""
+        mock_plt.subplots.return_value = (MagicMock(), MagicMock())
+        original_simulate = simulate.simulate
+        captured = {}
+        def mock_simulate(*args, **kwargs):
+            captured.update({k: v for k, v in kwargs.items()
+                             if k == 'elements' or k.startswith('element')})
+            return original_simulate(*args, **kwargs)
+        simulate.simulate = mock_simulate
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--animate', '--elements',
+                            '--element-rate', '2', '--element-radius', '1.5',
+                            '--element-boost', '-0.1',
+                            '--element-lifetime', '7', '--element-max', '9',
+                            '--generations', '1', '--pop-size', '2',
+                            '--output', self.test_output]
+                # window "closes" after 1 generation
+                mock_plt.get_fignums.side_effect = [[1], []]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            self.assertIs(captured['elements'], True)
+            self.assertEqual(captured['element_rate'], 2.0)
+            self.assertEqual(captured['element_radius'], 1.5)
+            self.assertEqual(captured['element_boost'], -0.1)
+            self.assertEqual(captured['element_lifetime'], 7)
+            self.assertEqual(captured['element_max'], 9)
         finally:
             simulate.simulate = original_simulate
 
