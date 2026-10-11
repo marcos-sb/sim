@@ -313,9 +313,9 @@ class TestCallbacks(unittest.TestCase):
             anim_callback(0, population, elements)
             self.assertEqual(mock_ax.scatter.call_count, 2)
             elem_call = mock_ax.scatter.call_args_list[1]
-            self.assertEqual(elem_call.kwargs['marker'], 'x')
-            # marker size encodes the bonus: 50 + 200 * |boost|
-            self.assertEqual(list(elem_call.kwargs['s']), [90.0, 70.0])
+            self.assertEqual(elem_call.kwargs['marker'], 'X')
+            # marker size encodes the bonus: 150 + 600 * |boost|
+            self.assertEqual(list(elem_call.kwargs['s']), [270.0, 210.0])
             self.assertTrue(mock_ax.legend.called)
             self.assertEqual(mock_ax.add_patch.call_count, 2)
             # second frame: the element scatter is updated in place

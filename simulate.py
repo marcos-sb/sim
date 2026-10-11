@@ -540,21 +540,23 @@ def main():
                 else:
                     scat.set_offsets(np.column_stack([xs, ys]))
                     scat.set_color(colors)
-                # Draw map elements: 'x' markers colored by the
-                # trait they boost and sized by the boost, with a
-                # dotted circle showing the radius
+                # Draw map elements: filled 'X' markers colored
+                # by the trait they boost, sized by the boost,
+                # with a dotted circle showing the radius
                 if elements:
                     exs = [e['pos'][0] for e in elements]
                     eys = [e['pos'][1] for e in elements]
                     ecolors = [cm.tab10(e['trait'] % 10) for e in elements]
-                    esizes = [50 + 200 * abs(e['boost']) for e in elements]
+                    esizes = [150 + 600 * abs(e['boost']) for e in elements]
                     if elem_scat is None:
                         elem_scat = ax.scatter(exs, eys, c=ecolors,
-                                               s=esizes, marker='x',
-                                               linewidths=2)
+                                               s=esizes, marker='X',
+                                               edgecolors='k',
+                                               linewidths=1.5)
                         ax.legend(handles=[
-                            Line2D([0], [0], marker='x', color='w',
-                                   markerfacecolor='gray', markersize=8,
+                            Line2D([0], [0], marker='X', color='w',
+                                   markerfacecolor='gray',
+                                   markeredgecolor='k', markersize=8,
                                    linestyle='None',
                                    label='element (color = trait, size = |boost|)'),
                             Line2D([0], [0], marker='o', color='w',
@@ -573,8 +575,8 @@ def main():
                     for e in elements:
                         elem_circles.append(ax.add_patch(Circle(
                             e['pos'], e['radius'], fill=False, linestyle=':',
-                            linewidth=1, color=cm.tab10(e['trait'] % 10),
-                            alpha=0.35)))
+                            linewidth=2, color=cm.tab10(e['trait'] % 10),
+                            alpha=0.6)))
                 # Axis limits are fixed above: positions are clamped to the
                 # configured range, so per-frame min/max rescaling is unnecessary
                 plt.pause(args.interval)
