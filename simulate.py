@@ -183,7 +183,9 @@ def _update_elements(population, elements, num_traits, rate, radius,
     Each element raises the trait it targets for creatures within its
     radius; the boost is strongest at the center and falls off
     linearly to zero at the edge. Elements expire after `lifetime`
-    generations and up to `element_max` exist at once.
+    generations. The cap is a hard limit: while `element_max`
+    elements exist, no new ones spawn, so elements are never
+    evicted early.
     """
     for element in elements:
         element['lifetime'] -= 1
@@ -193,17 +195,16 @@ def _update_elements(population, elements, num_traits, rate, radius,
     if random.random() < rate - n:
         n += 1
     for _ in range(n):
-        while len(elements) >= element_max and elements:
-            elements.pop(0)  # oldest first
-        if len(elements) < element_max:
-            elements.append({
-                'pos': [random.uniform(position_min, position_max)
-                        for _ in range(2)],
-                'trait': random.randrange(num_traits),
-                'radius': radius,
-                'boost': boost,
-                'lifetime': lifetime,
-            })
+        if len(elements) >= element_max:
+            break  # at capacity: wait for an element to expire
+        elements.append({
+            'pos': [random.uniform(position_min, position_max)
+                    for _ in range(2)],
+            'trait': random.randrange(num_traits),
+            'radius': radius,
+            'boost': boost,
+            'lifetime': lifetime,
+        })
     # apply boosts with linear falloff inside the radius
     for creature in population:
         for element in elements:
@@ -220,7 +221,7 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
              similarity_scale=0.5, move_step=0.1,
              plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
              elements=False, element_rate=1.0, element_radius=1.0,
-             element_boost=0.05, element_lifetime=20, element_max=50):
+             element_boost=0.05, element_lifetime=200, element_max=1):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
     # Initialize population
@@ -284,7 +285,7 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                    similarity_scale=0.5, move_step=0.1,
                    plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
                    elements=False, element_rate=1.0, element_radius=1.0,
-                   element_boost=0.05, element_lifetime=20, element_max=50):
+                   element_boost=0.05, element_lifetime=200, element_max=1):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
     # Initialize population: list of creatures, each creature is dict with traits list and pos
@@ -388,8 +389,8 @@ def main():
     parser.add_argument('--element-rate', type=float, default=1.0, help='Expected number of new elements per generation')
     parser.add_argument('--element-radius', type=float, default=1.0, help="Radius of each element's effect")
     parser.add_argument('--element-boost', type=float, default=0.05, help='Per-generation trait boost at an element center (linear falloff to 0 at the edge; negative values harm)')
-    parser.add_argument('--element-lifetime', type=int, default=20, help='Generations each element persists')
-    parser.add_argument('--element-max', type=int, default=50, help='Maximum simultaneous elements (oldest removed first)')
+    parser.add_argument('--element-lifetime', type=int, default=200, help='Generations each element persists')
+    parser.add_argument('--element-max', type=int, default=1, help='Maximum simultaneous elements (no new ones spawn while full)')
     
     parser.add_argument('--live-plot', action='store_true', help='Show trait evolution in real time (line chart)')
     parser.add_argument('--animate', action='store_true', help='Show real-time animation of positions colored by traits')

@@ -533,14 +533,27 @@ class TestSimulateFunctions(unittest.TestCase):
                 self.assertLessEqual(coord, 10.0)
 
     def test_update_elements_max_cap(self):
-        """The element cap drops the oldest elements first."""
+        """The element cap is a hard limit: no spawns while full."""
         elements = [{'pos': [1.0, 1.0], 'trait': 0, 'radius': 1.0,
-                     'boost': 0.1, 'lifetime': 10} for _ in range(3)]
+                     'boost': 0.1, 'lifetime': 10} for _ in range(2)]
         simulate._update_elements([], elements, num_traits=1, rate=5.0,
                                     radius=1.0, boost=0.1, lifetime=10,
                                     position_min=0.0, position_max=10.0,
                                     element_max=2)
+        # at capacity: nothing spawns and existing elements are kept
         self.assertEqual(len(elements), 2)
+        self.assertEqual([e['lifetime'] for e in elements], [9, 9])
+
+    def test_update_elements_fills_free_slots(self):
+        """Spawning fills free slots up to the cap."""
+        elements = [{'pos': [1.0, 1.0], 'trait': 0, 'radius': 1.0,
+                     'boost': 0.1, 'lifetime': 10}]
+        simulate._update_elements([], elements, num_traits=1, rate=5.0,
+                                    radius=1.0, boost=0.1, lifetime=10,
+                                    position_min=0.0, position_max=10.0,
+                                    element_max=3)
+        # only the two free slots are filled
+        self.assertEqual(len(elements), 3)
 
     def test_simulate_elements_stats_callback(self):
         """simulate reports the active element count in stats."""
@@ -587,6 +600,27 @@ class TestSimulateFunctions(unittest.TestCase):
                          [10, 20, 30])
         for _, stats in calls:
             self.assertEqual(len(stats['averages']), 3)
+
+    def test_simulate_single_element_persists(self):
+        """With a cap of 1, the element stays for its full
+        lifetime and is replaced only when it expires."""
+        frames = []
+        def cb(gen, population, elements):
+            frames.append([dict(e) for e in elements])
+        simulate.simulate(pop_size=5, generations=7, mutation_std=0.0,
+                          initial_mean=1.0, initial_std=0.0,
+                          position_std=0.0, position_min=0.0,
+                          position_max=1.0, elements=True,
+                          element_rate=1.0, element_radius=0.5,
+                          element_boost=0.05, element_lifetime=5,
+                          element_max=1,
+                          plot_callback=None, anim_callback=cb)
+        self.assertEqual(len(frames), 7)
+        for elements in frames:
+            self.assertEqual(len(elements), 1)
+        # the element ages 5,4,3,2,1, then a fresh one appears
+        self.assertEqual([e[0]['lifetime'] for e in frames],
+                         [5, 4, 3, 2, 1, 5, 4])
 
     def test_format_stats_with_elements(self):
         """_format_stats appends the element count when present."""
