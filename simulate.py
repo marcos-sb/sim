@@ -3,7 +3,6 @@ import csv
 import argparse
 import math
 import sys
-import os
 
 # Try to import numpy for color mapping; will be used only if animation requested
 try:
@@ -11,11 +10,85 @@ try:
 except Exception:
     np = None  # will check later if needed
 
-def _get_traits(creature):
-    if 'trait' in creature:
-        return creature['trait']
+# Bounds for the evolvable speed/size attributes.
+SPEED_MIN, SPEED_MAX = 0.1, 2.0
+SIZE_MIN, SIZE_MAX = 0.3, 3.0
+
+def _clamp(value, lo, hi):
+    """Clamp value into [lo, hi]."""
+    return min(max(value, lo), hi)
+
+def _mean_var(values):
+    """Mean and population variance of values."""
+    mean = sum(values) / len(values)
+    var = sum((v - mean) ** 2 for v in values) / len(values)
+    return mean, var
+
+def _trait_columns(population):
+    """Per-trait value columns; works for single- and multi-trait populations."""
+    if 'trait' in population[0]:
+        return [[c['trait'] for c in population]]
+    num_traits = len(population[0]['traits'])
+    return [[c['traits'][k] for c in population] for k in range(num_traits)]
+
+def _trait_distance(a, b):
+    """Euclidean distance between two creatures in trait space."""
+    if 'trait' in a:
+        return abs(a['trait'] - b['trait'])
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a['traits'], b['traits'])))
+
+def _random_pos(position_min, position_max):
+    """A random position within the configured bounds."""
+    return [random.uniform(position_min, position_max) for _ in range(2)]
+
+def _random_body():
+    """Default speed/size for a newborn creature."""
+    return {'speed': random.gauss(1.0, 0.2), 'size': random.gauss(1.0, 0.2)}
+
+def _inherit_ranged(own, partner_value, mutation_std, lo, hi):
+    """Inherit a ranged attribute from one parent (clone if alone), mutate, clamp."""
+    base = own if partner_value is None else random.choice((own, partner_value))
+    return _clamp(base + random.gauss(0.0, mutation_std), lo, hi)
+
+def _inherit_body(creature, partner, mutation_std):
+    """Offspring speed/size: inherit from one parent, mutate, clamp."""
+    partner_speed = partner.get('speed', 1.0) if partner is not None else None
+    partner_size = partner.get('size', 1.0) if partner is not None else None
+    return {
+        'speed': _inherit_ranged(creature.get('speed', 1.0), partner_speed,
+                                 mutation_std, SPEED_MIN, SPEED_MAX),
+        'size': _inherit_ranged(creature.get('size', 1.0), partner_size,
+                                mutation_std, SIZE_MIN, SIZE_MAX),
+    }
+
+def _offspring_pos(creature, partner, position_std, position_min, position_max):
+    """Offspring position: midpoint of the parents (clone if alone), mutated, clamped."""
+    if partner is None:
+        raw = [p + random.gauss(0.0, position_std) for p in creature['pos']]
     else:
-        return creature['traits']
+        raw = [(a + b) / 2.0 + random.gauss(0.0, position_std)
+               for a, b in zip(creature['pos'], partner['pos'])]
+    return [_clamp(p, position_min, position_max) for p in raw]
+
+def _fire_callbacks(gen, averages, population, elements,
+                    stats_callback, plot_callback, anim_callback):
+    """Dispatch the per-generation stats/plot/animation callbacks.
+
+    elements is the active element list, or None when disabled: stats then
+    carry no element count and the animation gets no element overlay.
+    """
+    if stats_callback:
+        stats = _population_stats(population)
+        if elements is not None:
+            stats['elements'] = len(elements)
+        stats_callback(gen, stats)
+    if plot_callback:
+        plot_callback(gen, averages)
+    if anim_callback:
+        if elements is not None:
+            anim_callback(gen, population, elements)
+        else:
+            anim_callback(gen, population)
 
 def _nearest_neighbour(creature, population):
     """Return the closest other creature by Euclidean distance, or None if alone."""
@@ -56,17 +129,8 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
     # initial spread and mutation rates are
     sigma = 0.0
     if similarity_scale > 0.0:
-        if 'trait' in population[0]:
-            mean = sum(c['trait'] for c in population) / len(population)
-            var = sum((c['trait'] - mean) ** 2 for c in population) / len(population)
-        else:
-            num_traits = len(population[0]['traits'])
-            var = 0.0
-            for k in range(num_traits):
-                mean_k = sum(c['traits'][k] for c in population) / len(population)
-                var += sum((c['traits'][k] - mean_k) ** 2
-                           for c in population) / len(population)
-            var /= num_traits
+        columns = _trait_columns(population)
+        var = sum(_mean_var(col)[1] for col in columns) / len(columns)
         sigma = similarity_scale * math.sqrt(var)
         if sigma <= 0.0:
             # monomorphic population: only exactly equal traits match
@@ -93,11 +157,7 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
             for other in population:
                 if other is creature:
                     continue
-                if 'trait' in creature:
-                    d = abs(creature['trait'] - other['trait'])
-                else:
-                    d = math.sqrt(sum((a - b) ** 2
-                                      for a, b in zip(creature['traits'], other['traits'])))
+                d = _trait_distance(creature, other)
                 if d > cutoff:
                     # dissimilar: keep personal space instead of attracting
                     d_pos = math.dist(creature['pos'], other['pos'])
@@ -130,8 +190,8 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
         # random movement
         creature['pos'][0] += dx + random.gauss(0.0, position_std)
         creature['pos'][1] += dy + random.gauss(0.0, position_std)
-        creature['pos'][0] = min(max(creature['pos'][0], position_min), position_max)
-        creature['pos'][1] = min(max(creature['pos'][1], position_min), position_max)
+        creature['pos'][0] = _clamp(creature['pos'][0], position_min, position_max)
+        creature['pos'][1] = _clamp(creature['pos'][1], position_min, position_max)
 
 def _widen_scale(vmin, vmax, values):
     """Widen a running [vmin, vmax] scale to include values (None = uninitialized)."""
@@ -149,28 +209,16 @@ def _color_norm(values, vmin, vmax):
 def _population_stats(population):
     """Per-generation stats: per-trait averages and standard
     deviations, and the mean pairwise distance between creatures."""
-    if 'trait' in population[0]:
-        # single trait mode
-        columns = [[c['trait'] for c in population]]
-    else:
-        # multi-trait mode
-        num_traits = len(population[0]['traits'])
-        columns = [[c['traits'][k] for c in population]
-                   for k in range(num_traits)]
+    columns = _trait_columns(population)
     averages = []
     stds = []
     for values in columns:
-        mean = sum(values) / len(values)
-        var = sum((v - mean) ** 2 for v in values) / len(values)
+        mean, var = _mean_var(values)
         averages.append(mean)
         stds.append(math.sqrt(var))
     # speed and size stats
-    speeds = [c.get('speed', 1.0) for c in population]
-    sizes = [c.get('size', 1.0) for c in population]
-    speed_mean = sum(speeds) / len(speeds)
-    speed_var = sum((s - speed_mean) ** 2 for s in speeds) / len(speeds)
-    size_mean = sum(sizes) / len(sizes)
-    size_var = sum((s - size_mean) ** 2 for s in sizes) / len(sizes)
+    speed_mean, speed_var = _mean_var([c.get('speed', 1.0) for c in population])
+    size_mean, size_var = _mean_var([c.get('size', 1.0) for c in population])
     spread = 0.0
     count = 0
     for i in range(len(population)):
@@ -250,11 +298,11 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
     # Initialize population
     population = []
     for _ in range(pop_size):
-        trait = random.gauss(initial_mean, initial_std)
-        speed = random.gauss(1.0, 0.2)  # default speed mean/std
-        size = random.gauss(1.0, 0.2)   # default size mean/std
-        pos = [random.uniform(position_min, position_max) for _ in range(2)]
-        population.append({'trait': trait, 'speed': speed, 'size': size, 'pos': pos})
+        population.append({
+            'trait': random.gauss(initial_mean, initial_std),
+            **_random_body(),
+            'pos': _random_pos(position_min, position_max),
+        })
     averages = []
     element_list = []  # active map elements
     gen = 0
@@ -267,18 +315,9 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
                              position_min, position_max, element_max)
         avg = sum(c['trait'] for c in population) / len(population)
         averages.append(avg)
-        if stats_callback:
-            stats = _population_stats(population)
-            if elements:
-                stats['elements'] = len(element_list)
-            stats_callback(gen, stats)
-        if plot_callback:
-            plot_callback(gen, [avg])
-        if anim_callback:
-            if elements:
-                anim_callback(gen, population, element_list)
-            else:
-                anim_callback(gen, population)
+        _fire_callbacks(gen, [avg], population,
+                        element_list if elements else None,
+                        stats_callback, plot_callback, anim_callback)
         # Reproduce: each creature interacts with its nearest neighbour
         # (distance-based interaction); the offspring inherits one parent's
         # trait and is placed between the two parents, then mutates
@@ -288,23 +327,16 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
             if partner is None:
                 # alone: clone with mutation
                 offspring_trait = creature['trait'] + random.gauss(0.0, mutation_std)
-                offspring_pos = [creature['pos'][i] + random.gauss(0.0, position_std) for i in range(2)]
             else:
-                # interaction: trait from one parent, position between parents
-                offspring_trait = random.choice((creature['trait'], partner['trait']))
-                offspring_trait += random.gauss(0.0, mutation_std)
-                offspring_pos = [(creature['pos'][i] + partner['pos'][i]) / 2.0
-                                 + random.gauss(0.0, position_std) for i in range(2)]
-            offspring_pos = [min(max(p, position_min), position_max) for p in offspring_pos]
-            # inherit speed and size from one parent, then mutate
-            offspring_speed = random.choice((creature['speed'], partner['speed']))
-            offspring_speed += random.gauss(0.0, mutation_std)
-            offspring_size = random.choice((creature['size'], partner['size']))
-            offspring_size += random.gauss(0.0, mutation_std)
-            # clamp speed/size to reasonable ranges
-            offspring_speed = max(0.1, min(2.0, offspring_speed))
-            offspring_size = max(0.3, min(3.0, offspring_size))
-            new_pop.append({'trait': offspring_trait, 'speed': offspring_speed, 'size': offspring_size, 'pos': offspring_pos})
+                # interaction: trait from one parent, then mutate
+                offspring_trait = (random.choice((creature['trait'], partner['trait']))
+                                   + random.gauss(0.0, mutation_std))
+            new_pop.append({
+                'trait': offspring_trait,
+                **_inherit_body(creature, partner, mutation_std),
+                'pos': _offspring_pos(creature, partner, position_std,
+                                      position_min, position_max),
+            })
         population = new_pop
         # Move creatures toward others with similar traits
         _move_toward_similar(population, similarity_scale, move_step,
@@ -324,15 +356,13 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
     # Initialize population: list of creatures, each creature is dict with traits list and pos
     population = []
     for _ in range(pop_size):
-        traits = [random.gauss(init_means[i], init_stds[i]) for i in range(num_traits)]
-        speed = random.gauss(1.0, 0.2)
-        size = random.gauss(1.0, 0.2)
-        pos = [random.uniform(position_min, position_max) for _ in range(2)]
-        population.append({'traits': traits, 'speed': speed, 'size': size, 'pos': pos})
+        population.append({
+            'traits': [random.gauss(init_means[i], init_stds[i]) for i in range(num_traits)],
+            **_random_body(),
+            'pos': _random_pos(position_min, position_max),
+        })
     # We'll track averages per trait per generation
     averages_per_trait = [[] for _ in range(num_traits)]
-    speeds = []
-    sizes = []
     element_list = []  # active map elements
     gen = 0
     while generations is None or gen < generations:
@@ -347,20 +377,9 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
         for i in range(num_traits):
             trait_avg = sum(c['traits'][i] for c in population) / pop_size
             averages_per_trait[i].append(trait_avg)
-        speeds.append(sum(c.get('speed', 1.0) for c in population) / pop_size)
-        sizes.append(sum(c.get('size', 1.0) for c in population) / pop_size)
-        if stats_callback:
-            stats = _population_stats(population)
-            if elements:
-                stats['elements'] = len(element_list)
-            stats_callback(gen, stats)
-        if plot_callback:
-            plot_callback(gen, [averages_per_trait[i][gen] for i in range(num_traits)])
-        if anim_callback:
-            if elements:
-                anim_callback(gen, population, element_list)
-            else:
-                anim_callback(gen, population)
+        _fire_callbacks(gen, [averages_per_trait[i][gen] for i in range(num_traits)],
+                        population, element_list if elements else None,
+                        stats_callback, plot_callback, anim_callback)
         # Reproduce: each creature interacts with its nearest neighbour
         # (distance-based interaction); each trait is inherited from one of
         # the two parents, and the offspring is placed between the parents
@@ -370,23 +389,16 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
             if partner is None:
                 # alone: clone with mutation
                 offspring_traits = [creature['traits'][i] + random.gauss(0.0, mutation_stds[i]) for i in range(num_traits)]
-                offspring_pos = [creature['pos'][i] + random.gauss(0.0, position_std) for i in range(2)]
             else:
-                # interaction: each trait from one parent, position between parents
+                # interaction: each trait from one parent, then mutate
                 offspring_traits = [random.choice((creature['traits'][i], partner['traits'][i]))
                                     + random.gauss(0.0, mutation_stds[i]) for i in range(num_traits)]
-                offspring_pos = [(creature['pos'][i] + partner['pos'][i]) / 2.0
-                                 + random.gauss(0.0, position_std) for i in range(2)]
-            offspring_pos = [min(max(p, position_min), position_max) for p in offspring_pos]
-            # inherit speed and size from one parent, then mutate
-            offspring_speed = random.choice((creature['speed'], partner['speed']))
-            offspring_speed += random.gauss(0.0, mutation_stds[0])
-            offspring_size = random.choice((creature['size'], partner['size']))
-            offspring_size += random.gauss(0.0, mutation_stds[0])
-            # clamp speed/size to reasonable ranges
-            offspring_speed = max(0.1, min(2.0, offspring_speed))
-            offspring_size = max(0.3, min(3.0, offspring_size))
-            offspring_pop.append({'traits': offspring_traits, 'speed': offspring_speed, 'size': offspring_size, 'pos': offspring_pos})
+            offspring_pop.append({
+                'traits': offspring_traits,
+                **_inherit_body(creature, partner, mutation_stds[0]),
+                'pos': _offspring_pos(creature, partner, position_std,
+                                      position_min, position_max),
+            })
         # Apply selection if needed
         if selection_strength > 0.0:
             # compute fitness for each offspring
@@ -408,6 +420,25 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                              position_std, position_min, position_max)
         gen += 1
     return averages_per_trait
+
+def _write_csv(path, header, rows):
+    """Write a header plus rows to path as CSV."""
+    with open(path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+def _print_trait_summary(averages_per_trait):
+    """Print initial/final averages and drift for each trait series."""
+    print('Initial averages per trait:')
+    for i, series in enumerate(averages_per_trait):
+        print(f'  Trait {i}: {series[0]:.4f}')
+    print('Final averages per trait:')
+    for i, series in enumerate(averages_per_trait):
+        print(f'  Trait {i}: {series[-1]:.4f}')
+    print('Differences per trait:')
+    for i, series in enumerate(averages_per_trait):
+        print(f'  Trait {i}: {abs(series[-1] - series[0]):.4f}')
 
 def main():
     parser = argparse.ArgumentParser(description='Simulate evolution of creature traits.')
@@ -658,33 +689,34 @@ def main():
             run_generations = None
             def stop_when():
                 return not plt_module.get_fignums()
+    # Arguments shared by both simulation modes.
+    common = dict(
+        position_std=args.position_std,
+        position_min=args.position_min,
+        position_max=args.position_max,
+        similarity_scale=args.similarity_scale,
+        move_step=args.move_step,
+        plot_callback=plot_callback,
+        stop_when=stop_when,
+        anim_callback=anim_callback,
+        elements=args.elements,
+        element_rate=args.element_rate,
+        element_radius=args.element_radius,
+        element_boost=args.element_boost,
+        element_lifetime=args.element_lifetime,
+        element_max=args.element_max,
+        stats_callback=stats_cb,
+    )
     if args.num_traits is None:
         # Backward compatibility: use original single-trait simulation
         averages = simulate(pop_size=args.pop_size, generations=run_generations,
                             mutation_std=args.mutation_std,
                             initial_mean=args.initial_mean,
                             initial_std=args.initial_std,
-                            position_std=args.position_std,
-                            position_min=args.position_min,
-                            position_max=args.position_max,
-                            similarity_scale=args.similarity_scale,
-                            move_step=args.move_step,
-                            plot_callback=plot_callback,
-                            stop_when=stop_when,
-                            anim_callback=anim_callback,
-                            elements=args.elements,
-                            element_rate=args.element_rate,
-                            element_radius=args.element_radius,
-                            element_boost=args.element_boost,
-                            element_lifetime=args.element_lifetime,
-                            element_max=args.element_max,
-                            stats_callback=stats_cb)
+                            **common)
         # Write CSV with single column
-        with open(args.output, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['generation', 'average_trait'])
-            for i, avg in enumerate(averages):
-                writer.writerow([i, avg])
+        _write_csv(args.output, ['generation', 'average_trait'],
+                   ([i, avg] for i, avg in enumerate(averages)))
         print(f'Simulation complete. Results written to {args.output}')
         if averages:
             print(f'Initial average: {averages[0]:.4f}')
@@ -712,6 +744,15 @@ def main():
         except ValueError as e:
             parser.error(str(e))
         
+        # Record real speed/size history through the stats callback so the
+        # CSV carries measured values (simulate_multi returns trait averages only).
+        speed_hist, size_hist = [], []
+        def record_stats(gen, stats):
+            speed_hist.append(stats['speed_avg'])
+            size_hist.append(stats['size_avg'])
+            if stats_cb is not None:
+                stats_cb(gen, stats)
+
         # Run multi-trait simulation
         averages_per_trait = simulate_multi(pop_size=args.pop_size, generations=run_generations,
                                             num_traits=num_traits,
@@ -720,46 +761,16 @@ def main():
                                             mutation_stds=mutation_stds,
                                             optimum=optimum,
                                             selection_strength=args.selection_strength,
-                                            position_std=args.position_std,
-                                            position_min=args.position_min,
-                                            position_max=args.position_max,
-                                            similarity_scale=args.similarity_scale,
-                                            move_step=args.move_step,
-                                            plot_callback=plot_callback,
-                                            stop_when=stop_when,
-                                            anim_callback=anim_callback,
-                                            elements=args.elements,
-                                            element_rate=args.element_rate,
-                                            element_radius=args.element_radius,
-                                            element_boost=args.element_boost,
-                                            element_lifetime=args.element_lifetime,
-                                            element_max=args.element_max,
-                                            stats_callback=stats_cb)
+                                            **{**common, 'stats_callback': record_stats})
         # Write CSV with columns for each trait, speed, and size
-        with open(args.output, 'w', newline='') as f:
-            writer = csv.writer(f)
-            header = ['generation'] + [f'trait{i}_avg' for i in range(num_traits)] + ['speed_avg', 'size_avg']
-            writer.writerow(header)
-            # Use default speed=1.0, size=1.0 averages since simulate_multi()
-            # returns only averages_per_trait; for full speed/size history,
-            # the simulation return type would need to be extended
-            speed_val = 1.0
-            size_val = 1.0
-            for gen in range(len(averages_per_trait[0])):
-                row = [gen] + [averages_per_trait[i][gen] for i in range(num_traits)] + [speed_val, size_val]
-                writer.writerow(row)
+        header = ['generation'] + [f'trait{i}_avg' for i in range(num_traits)] + ['speed_avg', 'size_avg']
+        rows = ([gen] + [averages_per_trait[i][gen] for i in range(num_traits)]
+                + [speed_hist[gen], size_hist[gen]]
+                for gen in range(len(averages_per_trait[0])))
+        _write_csv(args.output, header, rows)
         print(f'Simulation complete. Results written to {args.output}')
         if averages_per_trait[0]:
-            print('Initial averages per trait:')
-            for i in range(num_traits):
-                print(f'  Trait {i}: {averages_per_trait[i][0]:.4f}')
-            print('Final averages per trait:')
-            for i in range(num_traits):
-                print(f'  Trait {i}: {averages_per_trait[i][-1]:.4f}')
-            print('Differences per trait:')
-            for i in range(num_traits):
-                diff = abs(averages_per_trait[i][-1] - averages_per_trait[i][0])
-                print(f'  Trait {i}: {diff:.4f}')
+            _print_trait_summary(averages_per_trait)
     
     # After simulation, if live plot or animation was shown, keep window open until user closes
     if show_plot:

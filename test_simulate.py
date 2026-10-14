@@ -149,6 +149,21 @@ class TestSimulateFunctions(unittest.TestCase):
             if os.path.exists(test_file):
                 os.remove(test_file)
 
+    def test_single_creature_does_not_crash(self):
+        """A lone creature (no partner) reproduces by cloning in both modes."""
+        avg = simulate.simulate(pop_size=1, generations=3, mutation_std=0.05,
+                                initial_mean=1.0, initial_std=0.1,
+                                position_std=0.05, position_min=0.0, position_max=1.0)
+        self.assertEqual(len(avg), 3)
+        result = simulate.simulate_multi(pop_size=1, generations=3, num_traits=2,
+                                         init_means=[0.0, 1.0],
+                                         init_stds=[0.1, 0.1],
+                                         mutation_stds=[0.05, 0.05],
+                                         optimum=[0.0, 1.0],
+                                         selection_strength=0.0,
+                                         position_std=0.05, position_min=0.0, position_max=1.0)
+        self.assertEqual([len(t) for t in result], [3, 3])
+
     def test_main_multi_trait_creates_csv(self):
         """Test that main() with --num-traits creates correct CSV."""
         test_file = 'test_multi.csv'
@@ -172,7 +187,8 @@ class TestSimulateFunctions(unittest.TestCase):
             self.assertEqual(len(reader), 5)  # 4 generations + header
             for row in reader[1:]:
                 self.assertEqual(len(row), 5)
-                float(row[0]); float(row[1]); float(row[2])
+                for value in row:
+                    float(value)
         finally:
             sys.argv = old_argv
             if os.path.exists(test_file):
