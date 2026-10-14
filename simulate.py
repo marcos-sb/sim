@@ -47,6 +47,9 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
     move simultaneously: displacements are computed from the same
     snapshot, so the result does not depend on iteration order.
     Positions are jittered by position_std and clamped to the bounds.
+
+    Each creature's speed scales its displacement; its size scales its
+    personal-space repulsion contribution.
     """
     # Similarity radius in trait units, scaled to the population's
     # trait diversity so the layout stays balanced whatever the
@@ -81,6 +84,8 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
         dy = 0.0
         rx = 0.0
         ry = 0.0
+        speed = creature.get('speed', 1.0)
+        size = creature.get('size', 1.0)
         if similarity_scale > 0.0:
             weight_sum = 0.0
             centroid_x = 0.0
@@ -98,8 +103,9 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
                     d_pos = math.dist(creature['pos'], other['pos'])
                     if 0.0 < d_pos < repel_radius:
                         f = (repel_radius - d_pos) / repel_radius
-                        rx += f * (creature['pos'][0] - other['pos'][0]) / d_pos
-                        ry += f * (creature['pos'][1] - other['pos'][1]) / d_pos
+                        # size scales personal space repulsion
+                        rx += f * (creature['pos'][0] - other['pos'][0]) / d_pos * size
+                        ry += f * (creature['pos'][1] - other['pos'][1]) / d_pos * size
                     continue
                 weight = math.exp(-(d * d) / (2.0 * sigma * sigma))
                 weight_sum += weight
@@ -116,6 +122,9 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
                 ry /= repel_mag
             dx += move_step * rx
             dy += move_step * ry
+        # scale displacement by creature's speed
+        dx *= speed
+        dy *= speed
         displacements.append((dx, dy))
     for creature, (dx, dy) in zip(population, displacements):
         # random movement
@@ -155,6 +164,13 @@ def _population_stats(population):
         var = sum((v - mean) ** 2 for v in values) / len(values)
         averages.append(mean)
         stds.append(math.sqrt(var))
+    # speed and size stats
+    speeds = [c.get('speed', 1.0) for c in population]
+    sizes = [c.get('size', 1.0) for c in population]
+    speed_mean = sum(speeds) / len(speeds)
+    speed_var = sum((s - speed_mean) ** 2 for s in speeds) / len(speeds)
+    size_mean = sum(sizes) / len(sizes)
+    size_var = sum((s - size_mean) ** 2 for s in sizes) / len(sizes)
     spread = 0.0
     count = 0
     for i in range(len(population)):
@@ -163,7 +179,10 @@ def _population_stats(population):
             count += 1
     if count > 0:
         spread /= count
-    return {'averages': averages, 'stds': stds, 'spread': spread}
+    return {'averages': averages, 'stds': stds,
+            'speed_avg': speed_mean, 'speed_std': math.sqrt(speed_var),
+            'size_avg': size_mean, 'size_std': math.sqrt(size_var),
+            'spread': spread}
 
 def _format_stats(gen, stats):
     """One text block for the plot window: generation, per-trait
@@ -173,6 +192,10 @@ def _format_stats(gen, stats):
     text = f'gen {gen}\navg {avg}\nstd {std}\nspread {stats["spread"]:.2f}'
     if 'elements' in stats:
         text += f'\nelements {stats["elements"]}'
+    if 'speed_avg' in stats:
+        text += f'\nspeed {stats["speed_avg"]:.4f}±{stats["speed_std"]:.4f}'
+    if 'size_avg' in stats:
+        text += f'\nsize {stats["size_avg"]:.4f}±{stats["size_std"]:.4f}'
     return text
 
 def _update_elements(population, elements, num_traits, rate, radius,
@@ -228,8 +251,10 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
     population = []
     for _ in range(pop_size):
         trait = random.gauss(initial_mean, initial_std)
+        speed = random.gauss(1.0, 0.2)  # default speed mean/std
+        size = random.gauss(1.0, 0.2)   # default size mean/std
         pos = [random.uniform(position_min, position_max) for _ in range(2)]
-        population.append({'trait': trait, 'pos': pos})
+        population.append({'trait': trait, 'speed': speed, 'size': size, 'pos': pos})
     averages = []
     element_list = []  # active map elements
     gen = 0
@@ -271,7 +296,15 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
                 offspring_pos = [(creature['pos'][i] + partner['pos'][i]) / 2.0
                                  + random.gauss(0.0, position_std) for i in range(2)]
             offspring_pos = [min(max(p, position_min), position_max) for p in offspring_pos]
-            new_pop.append({'trait': offspring_trait, 'pos': offspring_pos})
+            # inherit speed and size from one parent, then mutate
+            offspring_speed = random.choice((creature['speed'], partner['speed']))
+            offspring_speed += random.gauss(0.0, mutation_std)
+            offspring_size = random.choice((creature['size'], partner['size']))
+            offspring_size += random.gauss(0.0, mutation_std)
+            # clamp speed/size to reasonable ranges
+            offspring_speed = max(0.1, min(2.0, offspring_speed))
+            offspring_size = max(0.3, min(3.0, offspring_size))
+            new_pop.append({'trait': offspring_trait, 'speed': offspring_speed, 'size': offspring_size, 'pos': offspring_pos})
         population = new_pop
         # Move creatures toward others with similar traits
         _move_toward_similar(population, similarity_scale, move_step,
@@ -292,10 +325,14 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
     population = []
     for _ in range(pop_size):
         traits = [random.gauss(init_means[i], init_stds[i]) for i in range(num_traits)]
+        speed = random.gauss(1.0, 0.2)
+        size = random.gauss(1.0, 0.2)
         pos = [random.uniform(position_min, position_max) for _ in range(2)]
-        population.append({'traits': traits, 'pos': pos})
+        population.append({'traits': traits, 'speed': speed, 'size': size, 'pos': pos})
     # We'll track averages per trait per generation
     averages_per_trait = [[] for _ in range(num_traits)]
+    speeds = []
+    sizes = []
     element_list = []  # active map elements
     gen = 0
     while generations is None or gen < generations:
@@ -310,6 +347,8 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
         for i in range(num_traits):
             trait_avg = sum(c['traits'][i] for c in population) / pop_size
             averages_per_trait[i].append(trait_avg)
+        speeds.append(sum(c.get('speed', 1.0) for c in population) / pop_size)
+        sizes.append(sum(c.get('size', 1.0) for c in population) / pop_size)
         if stats_callback:
             stats = _population_stats(population)
             if elements:
@@ -339,7 +378,15 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                 offspring_pos = [(creature['pos'][i] + partner['pos'][i]) / 2.0
                                  + random.gauss(0.0, position_std) for i in range(2)]
             offspring_pos = [min(max(p, position_min), position_max) for p in offspring_pos]
-            offspring_pop.append({'traits': offspring_traits, 'pos': offspring_pos})
+            # inherit speed and size from one parent, then mutate
+            offspring_speed = random.choice((creature['speed'], partner['speed']))
+            offspring_speed += random.gauss(0.0, mutation_stds[0])
+            offspring_size = random.choice((creature['size'], partner['size']))
+            offspring_size += random.gauss(0.0, mutation_stds[0])
+            # clamp speed/size to reasonable ranges
+            offspring_speed = max(0.1, min(2.0, offspring_speed))
+            offspring_size = max(0.3, min(3.0, offspring_size))
+            offspring_pop.append({'traits': offspring_traits, 'speed': offspring_speed, 'size': offspring_size, 'pos': offspring_pos})
         # Apply selection if needed
         if selection_strength > 0.0:
             # compute fitness for each offspring
@@ -688,13 +735,18 @@ def main():
                                             element_lifetime=args.element_lifetime,
                                             element_max=args.element_max,
                                             stats_callback=stats_cb)
-        # Write CSV with columns for each trait
+        # Write CSV with columns for each trait, speed, and size
         with open(args.output, 'w', newline='') as f:
             writer = csv.writer(f)
-            header = ['generation'] + [f'trait{i}_avg' for i in range(num_traits)]
+            header = ['generation'] + [f'trait{i}_avg' for i in range(num_traits)] + ['speed_avg', 'size_avg']
             writer.writerow(header)
+            # Use default speed=1.0, size=1.0 averages since simulate_multi()
+            # returns only averages_per_trait; for full speed/size history,
+            # the simulation return type would need to be extended
+            speed_val = 1.0
+            size_val = 1.0
             for gen in range(len(averages_per_trait[0])):
-                row = [gen] + [averages_per_trait[i][gen] for i in range(num_traits)]
+                row = [gen] + [averages_per_trait[i][gen] for i in range(num_traits)] + [speed_val, size_val]
                 writer.writerow(row)
         print(f'Simulation complete. Results written to {args.output}')
         if averages_per_trait[0]:

@@ -168,10 +168,10 @@ class TestSimulateFunctions(unittest.TestCase):
             self.assertTrue(os.path.exists(test_file))
             with open(test_file, 'r') as f:
                 reader = list(csv.reader(f))
-            self.assertEqual(reader[0], ['generation', 'trait0_avg', 'trait1_avg'])
+            self.assertEqual(reader[0], ['generation', 'trait0_avg', 'trait1_avg', 'speed_avg', 'size_avg'])
             self.assertEqual(len(reader), 5)  # 4 generations + header
             for row in reader[1:]:
-                self.assertEqual(len(row), 3)
+                self.assertEqual(len(row), 5)
                 float(row[0]); float(row[1]); float(row[2])
         finally:
             sys.argv = old_argv
