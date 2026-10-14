@@ -164,6 +164,95 @@ class TestSimulateFunctions(unittest.TestCase):
                                          position_std=0.05, position_min=0.0, position_max=1.0)
         self.assertEqual([len(t) for t in result], [3, 3])
 
+    def test_selection_produces_independent_creatures(self):
+        """Selection copies offspring: no two population slots share one dict."""
+        frames = []
+        def cb(gen, population):
+            frames.append([id(c) for c in population])
+        simulate.simulate_multi(pop_size=10, generations=4, num_traits=2,
+                                init_means=[0.0, 0.0],
+                                init_stds=[1.0, 1.0],
+                                mutation_stds=[0.1, 0.1],
+                                optimum=[5.0, 5.0],
+                                selection_strength=2.0,
+                                position_std=0.05, position_min=0.0, position_max=10.0,
+                                anim_callback=cb)
+        self.assertEqual(len(frames), 4)
+        for ids in frames:
+            self.assertEqual(len(set(ids)), 10)
+
+    def test_optimum_required_with_selection(self):
+        """Selection without an optimum is rejected with a clear error."""
+        with self.assertRaises(ValueError):
+            simulate.simulate_multi(pop_size=5, generations=3, num_traits=2,
+                                    init_means=[0.0, 1.0],
+                                    init_stds=[0.1, 0.1],
+                                    mutation_stds=[0.05, 0.05],
+                                    optimum=None,
+                                    selection_strength=1.0)
+
+    def test_pop_size_zero_rejected(self):
+        """pop_size < 1 is rejected instead of crashing on an empty population."""
+        with self.assertRaises(ValueError):
+            simulate.simulate(pop_size=0, generations=3)
+        with self.assertRaises(ValueError):
+            simulate.simulate_multi(pop_size=0, generations=3, num_traits=2,
+                                    init_means=[0.0, 1.0],
+                                    init_stds=[0.1, 0.1],
+                                    mutation_stds=[0.05, 0.05],
+                                    optimum=[0.0, 1.0])
+
+    def test_seed_reproducible(self):
+        """Two runs with the same --seed produce byte-identical CSVs."""
+        files = ['test_seed_a.csv', 'test_seed_b.csv']
+        for f in files:
+            if os.path.exists(f):
+                os.remove(f)
+        old_argv = sys.argv.copy()
+        try:
+            for f in files:
+                sys.argv = ['simulate.py', '--seed', '7',
+                            '--generations', '3', '--pop-size', '6',
+                            '--output', f]
+                simulate.main()
+            with open(files[0], 'rb') as fa, open(files[1], 'rb') as fb:
+                self.assertEqual(fa.read(), fb.read())
+        finally:
+            sys.argv = old_argv
+            for f in files:
+                if os.path.exists(f):
+                    os.remove(f)
+
+    def test_speed_size_cli_controls(self):
+        """--speed/--size-mean set the initial averages (zero std = exact)."""
+        test_file = 'test_body_cli.csv'
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--num-traits', '2',
+                        '--generations', '2', '--pop-size', '10',
+                        '--init-means', '0.0,1.0',
+                        '--init-stds', '0.1,0.1',
+                        '--mutation-stds', '0.05,0.05',
+                        '--optimum', '0.0,1.0',
+                        '--speed-mean', '2.0', '--speed-std', '0.0',
+                        '--size-mean', '0.5', '--size-std', '0.0',
+                        '--output', test_file]
+            simulate.main()
+            with open(test_file, 'r') as f:
+                reader = list(csv.reader(f))
+            self.assertEqual(reader[0],
+                             ['generation', 'trait0_avg', 'trait1_avg',
+                              'speed_avg', 'size_avg'])
+            # generation 0 is recorded before any mutation: exact init values
+            self.assertAlmostEqual(float(reader[1][3]), 2.0, places=12)
+            self.assertAlmostEqual(float(reader[1][4]), 0.5, places=12)
+        finally:
+            sys.argv = old_argv
+            if os.path.exists(test_file):
+                os.remove(test_file)
+
     def test_main_multi_trait_creates_csv(self):
         """Test that main() with --num-traits creates correct CSV."""
         test_file = 'test_multi.csv'

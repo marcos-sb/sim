@@ -41,24 +41,25 @@ def _random_pos(position_min, position_max):
     """A random position within the configured bounds."""
     return [random.uniform(position_min, position_max) for _ in range(2)]
 
-def _random_body():
-    """Default speed/size for a newborn creature."""
-    return {'speed': random.gauss(1.0, 0.2), 'size': random.gauss(1.0, 0.2)}
+def _random_body(speed_mean=1.0, speed_std=0.2, size_mean=1.0, size_std=0.2):
+    """Speed/size for a newborn creature."""
+    return {'speed': random.gauss(speed_mean, speed_std),
+            'size': random.gauss(size_mean, size_std)}
 
 def _inherit_ranged(own, partner_value, mutation_std, lo, hi):
     """Inherit a ranged attribute from one parent (clone if alone), mutate, clamp."""
     base = own if partner_value is None else random.choice((own, partner_value))
     return _clamp(base + random.gauss(0.0, mutation_std), lo, hi)
 
-def _inherit_body(creature, partner, mutation_std):
+def _inherit_body(creature, partner, speed_mut, size_mut):
     """Offspring speed/size: inherit from one parent, mutate, clamp."""
     partner_speed = partner.get('speed', 1.0) if partner is not None else None
     partner_size = partner.get('size', 1.0) if partner is not None else None
     return {
         'speed': _inherit_ranged(creature.get('speed', 1.0), partner_speed,
-                                 mutation_std, SPEED_MIN, SPEED_MAX),
+                                 speed_mut, SPEED_MIN, SPEED_MAX),
         'size': _inherit_ranged(creature.get('size', 1.0), partner_size,
-                                mutation_std, SIZE_MIN, SIZE_MAX),
+                                size_mut, SIZE_MIN, SIZE_MAX),
     }
 
 def _offspring_pos(creature, partner, position_std, position_min, position_max):
@@ -292,15 +293,23 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
              similarity_scale=0.5, move_step=0.1,
              plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
              elements=False, element_rate=1.0, element_radius=1.0,
-             element_boost=0.05, element_lifetime=200, element_max=1):
+             element_boost=0.05, element_lifetime=200, element_max=1,
+             speed_mean=1.0, speed_std=0.2, speed_mut=None,
+             size_mean=1.0, size_std=0.2, size_mut=None):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
+    if pop_size < 1:
+        raise ValueError('pop_size must be at least 1')
+    if speed_mut is None:
+        speed_mut = mutation_std
+    if size_mut is None:
+        size_mut = mutation_std
     # Initialize population
     population = []
     for _ in range(pop_size):
         population.append({
             'trait': random.gauss(initial_mean, initial_std),
-            **_random_body(),
+            **_random_body(speed_mean, speed_std, size_mean, size_std),
             'pos': _random_pos(position_min, position_max),
         })
     averages = []
@@ -333,7 +342,7 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
                                    + random.gauss(0.0, mutation_std))
             new_pop.append({
                 'trait': offspring_trait,
-                **_inherit_body(creature, partner, mutation_std),
+                **_inherit_body(creature, partner, speed_mut, size_mut),
                 'pos': _offspring_pos(creature, partner, position_std,
                                       position_min, position_max),
             })
@@ -350,15 +359,25 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                    similarity_scale=0.5, move_step=0.1,
                    plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
                    elements=False, element_rate=1.0, element_radius=1.0,
-                   element_boost=0.05, element_lifetime=200, element_max=1):
+                   element_boost=0.05, element_lifetime=200, element_max=1,
+                   speed_mean=1.0, speed_std=0.2, speed_mut=None,
+                   size_mean=1.0, size_std=0.2, size_mut=None):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
+    if pop_size < 1:
+        raise ValueError('pop_size must be at least 1')
+    if selection_strength > 0.0 and optimum is None:
+        raise ValueError('optimum is required when selection_strength > 0')
+    if speed_mut is None:
+        speed_mut = mutation_stds[0]
+    if size_mut is None:
+        size_mut = mutation_stds[0]
     # Initialize population: list of creatures, each creature is dict with traits list and pos
     population = []
     for _ in range(pop_size):
         population.append({
             'traits': [random.gauss(init_means[i], init_stds[i]) for i in range(num_traits)],
-            **_random_body(),
+            **_random_body(speed_mean, speed_std, size_mean, size_std),
             'pos': _random_pos(position_min, position_max),
         })
     # We'll track averages per trait per generation
@@ -395,7 +414,7 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                                     + random.gauss(0.0, mutation_stds[i]) for i in range(num_traits)]
             offspring_pop.append({
                 'traits': offspring_traits,
-                **_inherit_body(creature, partner, mutation_stds[0]),
+                **_inherit_body(creature, partner, speed_mut, size_mut),
                 'pos': _offspring_pos(creature, partner, position_std,
                                       position_min, position_max),
             })
@@ -407,12 +426,15 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                 sq_dist = sum((ind['traits'][i] - optimum[i])**2 for i in range(num_traits))
                 fitness = math.exp(-selection_strength * sq_dist)
                 fitnesses.append(fitness)
-            # Weighted random sampling to choose next generation
+            # Weighted random sampling to choose next generation.
+            # Copy: choices() samples with replacement, and sharing one
+            # dict between slots would move/boost that creature repeatedly.
             if sum(fitnesses) == 0:
                 weights = [1.0] * pop_size
             else:
                 weights = fitnesses
-            population = random.choices(offspring_pop, weights=weights, k=pop_size)
+            population = [dict(ind, traits=list(ind['traits']), pos=list(ind['pos']))
+                          for ind in random.choices(offspring_pop, weights=weights, k=pop_size)]
         else:
             population = offspring_pop
         # Move creatures toward others with similar traits
@@ -448,7 +470,14 @@ def main():
     parser.add_argument('--mutation-std', type=float, default=0.05, help='Mutation standard deviation (single trait)')
     parser.add_argument('--initial-mean', type=float, default=1.0, help='Initial mean trait value (single trait)')
     parser.add_argument('--initial-std', type=float, default=0.1, help='Initial standard deviation (single trait)')
+    parser.add_argument('--speed-mean', type=float, default=1.0, help='Initial mean speed')
+    parser.add_argument('--speed-std', type=float, default=0.2, help='Initial standard deviation of speed')
+    parser.add_argument('--speed-mut', type=float, default=None, help='Mutation standard deviation for speed (defaults to the trait mutation std)')
+    parser.add_argument('--size-mean', type=float, default=1.0, help='Initial mean size')
+    parser.add_argument('--size-std', type=float, default=0.2, help='Initial standard deviation of size')
+    parser.add_argument('--size-mut', type=float, default=None, help='Mutation standard deviation for size (defaults to the trait mutation std)')
     parser.add_argument('--output', type=str, default='traits.csv', help='Output CSV file')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility (seeds both random and numpy)')
     # New arguments for multi-trait and selection
     parser.add_argument('--num-traits', type=int, default=None, help='Number of traits to simulate (if set, enables multi-trait mode)')
     parser.add_argument('--init-means', type=str, default='', help='Comma-separated initial means for each trait')
@@ -473,6 +502,11 @@ def main():
     parser.add_argument('--live-plot', action='store_true', help='Show trait evolution in real time (line chart)')
     parser.add_argument('--animate', action='store_true', help='Show real-time animation of positions colored by traits')
     args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        if np is not None:
+            np.random.seed(args.seed)
     
     plt_module = None
     show_plot = False
@@ -560,6 +594,8 @@ def main():
             scat = None  # will initialize on first callback
             elem_scat = None  # element scatter, init on first callback
             elem_circles = []  # radius circles, redrawn each frame
+            quiv = None  # motion arrows, redrawn each frame
+            prev_xy = None  # previous positions, for displacement arrows
             # Fixed color scales: running min/max per trait channel that only
             # widen, so a creature's color depends on its trait value alone
             # (similar traits get similar colors across the whole animation)
@@ -567,8 +603,12 @@ def main():
             trait_vmax = None
             rgb_mins = None
             rgb_maxs = None
+            # Fixed size scale: same widen-only rule, mapped to marker areas
+            size_vmin = None
+            size_vmax = None
             def anim_callback(gen, population, elements=None):
                 nonlocal scat, trait_vmin, trait_vmax, rgb_mins, rgb_maxs, elem_scat
+                nonlocal quiv, prev_xy, size_vmin, size_vmax
                 # Extract positions
                 xs = [c['pos'][0] for c in population]
                 ys = [c['pos'][1] for c in population]
@@ -608,16 +648,22 @@ def main():
                         trait_vmin, trait_vmax = _widen_scale(trait_vmin, trait_vmax, trait_vals)
                         norm = _color_norm(trait_vals, trait_vmin, trait_vmax)
                         colors = cm.viridis(norm)
+                # Marker area encodes size on the fixed widening scale
+                sizes = [c.get('size', 1.0) for c in population]
+                size_vmin, size_vmax = _widen_scale(size_vmin, size_vmax, sizes)
+                areas = [15.0 + 105.0 * v
+                         for v in _color_norm(sizes, size_vmin, size_vmax)]
                 # Initialize or update scatter
                 if scat is None:
-                    scat = ax.scatter(xs, ys, c=colors, s=30, edgecolors='k', linewidths=0.5)
+                    scat = ax.scatter(xs, ys, c=colors, s=areas, edgecolors='k', linewidths=0.5)
                     ax.set_xlabel('X position')
                     ax.set_ylabel('Y position')
-                    ax.set_title('Creature positions (color = trait)')
+                    ax.set_title('Creature positions (color = trait, size = size)')
                     ax.grid(True, linestyle='--', alpha=0.5)
                 else:
                     scat.set_offsets(np.column_stack([xs, ys]))
                     scat.set_color(colors)
+                    scat.set_sizes(areas)
                 # Draw map elements: filled 'X' markers colored
                 # by the trait they boost, sized by the boost,
                 # with a dotted circle showing the radius
@@ -655,6 +701,17 @@ def main():
                             e['pos'], e['radius'], fill=False, linestyle=':',
                             linewidth=2, color=cm.tab10(e['trait'] % 10),
                             alpha=0.6)))
+                # Motion arrows: each creature's last displacement, drawn in
+                # true data units so arrow length reads as speed
+                if prev_xy is not None:
+                    us = [x - px for x, px in zip(xs, prev_xy[0])]
+                    vs = [y - py for y, py in zip(ys, prev_xy[1])]
+                    if quiv is not None:
+                        quiv.remove()
+                    quiv = ax.quiver(xs, ys, us, vs, angles='xy',
+                                     scale_units='xy', scale=1.0,
+                                     color='k', alpha=0.35, width=0.004)
+                prev_xy = (list(xs), list(ys))
                 # Axis limits are fixed above: positions are clamped to the
                 # configured range, so per-frame min/max rescaling is unnecessary
                 plt.pause(args.interval)
@@ -706,6 +763,12 @@ def main():
         element_lifetime=args.element_lifetime,
         element_max=args.element_max,
         stats_callback=stats_cb,
+        speed_mean=args.speed_mean,
+        speed_std=args.speed_std,
+        speed_mut=args.speed_mut,
+        size_mean=args.size_mean,
+        size_std=args.size_std,
+        size_mut=args.size_mut,
     )
     if args.num_traits is None:
         # Backward compatibility: use original single-trait simulation
