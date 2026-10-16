@@ -594,8 +594,6 @@ def main():
             scat = None  # will initialize on first callback
             elem_scat = None  # element scatter, init on first callback
             elem_circles = []  # radius circles, redrawn each frame
-            quiv = None  # motion arrows, redrawn each frame
-            prev_xy = None  # previous positions, for displacement arrows
             # Fixed color scales: running min/max per trait channel that only
             # widen, so a creature's color depends on its trait value alone
             # (similar traits get similar colors across the whole animation)
@@ -608,7 +606,7 @@ def main():
             size_vmax = None
             def anim_callback(gen, population, elements=None):
                 nonlocal scat, trait_vmin, trait_vmax, rgb_mins, rgb_maxs, elem_scat
-                nonlocal quiv, prev_xy, size_vmin, size_vmax
+                nonlocal size_vmin, size_vmax
                 # Extract positions
                 xs = [c['pos'][0] for c in population]
                 ys = [c['pos'][1] for c in population]
@@ -701,17 +699,6 @@ def main():
                             e['pos'], e['radius'], fill=False, linestyle=':',
                             linewidth=2, color=cm.tab10(e['trait'] % 10),
                             alpha=0.6)))
-                # Motion arrows: each creature's last displacement, drawn in
-                # true data units so arrow length reads as speed
-                if prev_xy is not None:
-                    us = [x - px for x, px in zip(xs, prev_xy[0])]
-                    vs = [y - py for y, py in zip(ys, prev_xy[1])]
-                    if quiv is not None:
-                        quiv.remove()
-                    quiv = ax.quiver(xs, ys, us, vs, angles='xy',
-                                     scale_units='xy', scale=1.0,
-                                     color='k', alpha=0.35, width=0.004)
-                prev_xy = (list(xs), list(ys))
                 # Axis limits are fixed above: positions are clamped to the
                 # configured range, so per-frame min/max rescaling is unnecessary
                 plt.pause(args.interval)

@@ -320,17 +320,11 @@ class TestCallbacks(unittest.TestCase):
             # default size 1.0, which normalizes to 0 on its fresh scale
             creature_call = mock_ax.scatter.call_args_list[0]
             self.assertEqual(list(creature_call.kwargs['s']), [15.0, 15.0])
-            # first frame has no previous positions: no motion arrows yet
-            self.assertFalse(mock_ax.quiver.called)
             self.assertTrue(mock_ax.legend.called)
             self.assertEqual(mock_ax.add_patch.call_count, 2)
             # second frame: the element scatter is updated in place
             anim_callback(1, population, elements)
             self.assertTrue(mock_ax.scatter.return_value.set_sizes.called)
-            # second frame draws one quiver of last-step displacements
-            self.assertEqual(mock_ax.quiver.call_count, 1)
-            quiver_call = mock_ax.quiver.call_args_list[0]
-            self.assertEqual(quiver_call.kwargs.get('scale_units'), 'xy')
             self.assertEqual(mock_ax.scatter.call_count, 2)
             self.assertEqual(mock_ax.add_patch.call_count, 4)
         finally:
