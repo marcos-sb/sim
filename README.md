@@ -32,12 +32,11 @@ traits. Optional stabilizing selection and map elements can bias evolution.
 
 - Python 3.9+
 - `numpy`, `matplotlib` — required only for `--live-plot` / `--animate`
-- `pytest` — for tests
-
-No `requirements.txt`; install directly, e.g.:
+- `pytest`, `ruff`, `black` — dev only
 
 ```bash
-pip install numpy matplotlib pytest
+pip install -e .          # runtime deps (numpy, matplotlib)
+pip install -e ".[dev]"   # + pytest, ruff, black
 ```
 
 ## Quickstart
@@ -200,6 +199,8 @@ receives `(gen, population, elements)`.
 
 ```bash
 python3 -m pytest -q
+ruff check .
+black --check .
 ```
 
 Covers reproduction/inheritance, position bounds/midpoints, movement,
@@ -213,6 +214,13 @@ simulate.py       # simulation, CLI, live plot / animation
 visualize.py      # offline CSV -> matplotlib line chart
 test_simulate.py  # simulation behavior tests
 test_callbacks.py # callback / CLI wiring tests
+pyproject.toml    # packaging, deps, pytest/ruff/black config
+.github/workflows/ci.yml  # CI: ruff + black + pytest
+LICENSE           # MIT
 traits.csv        # example multi-trait output (ignored by git)
 demo*.csv, test_*.csv, *.png  # example outputs (ignored by git)
 ```
+
+## License
+
+MIT — see `LICENSE`.
