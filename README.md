@@ -86,7 +86,12 @@ Offline plot:
 ```bash
 python3 visualize.py traits.csv --output traits.png
 python3 visualize.py traits.csv   # show window instead
+# multi-trait: filter traits, optionally include speed/size series
+python3 visualize.py traits.csv --traits 0,1 --with-body --output traits.png
 ```
+
+Note: CSVs store per-generation averages only, so offline plots show
+average series (no std/spread bands — those appear in the live stats box).
 
 ## Usage
 
@@ -167,6 +172,15 @@ python3 simulate.py --live-plot --animate --elements
 
 `*.csv` and `*.png` are git-ignored outputs (see `.gitignore`).
 
+## Performance
+
+Nearest-neighbor search and similarity movement are O(N²) per generation
+(`_nearest_neighbour`, `_move_toward_similar`, pairwise `spread` stats).
+Measured on this machine (5 generations, default movement): N=100 ~0.03s,
+N=200 ~0.09s, N=400 ~0.36s. N≤500 is comfortable; N≥2000 gets slow. If you
+need larger populations, consider a spatial index (`scipy.spatial.cKDTree`)
+— left out intentionally to keep runtime deps to `numpy` + `matplotlib`.
+
 ## Python API
 
 ```python
@@ -210,12 +224,13 @@ and `--live-plot` / `--animate` callback wiring (mocked `matplotlib`).
 ## Project structure
 
 ```text
-simulate.py       # simulation, CLI, live plot / animation
-visualize.py      # offline CSV -> matplotlib line chart
+model.py          # evolution model: reproduction, movement, selection, elements
+live_viz.py       # live matplotlib handlers (line chart + 2D animation)
+simulate.py       # thin CLI (argparse, CSV output); re-exports model API
+visualize.py      # offline CSV -> matplotlib line chart (--traits, --with-body)
 test_simulate.py  # simulation behavior tests
 test_callbacks.py # callback / CLI wiring tests
 pyproject.toml    # packaging, deps, pytest/ruff/black config
-.github/workflows/ci.yml  # CI: ruff + black + pytest
 LICENSE           # MIT
 traits.csv        # example multi-trait output (ignored by git)
 demo*.csv, test_*.csv, *.png  # example outputs (ignored by git)
