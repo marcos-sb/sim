@@ -33,11 +33,11 @@ def _trait_columns(population):
     return [[c['traits'][k] for c in population] for k in range(num_traits)]
 
 
-def _trait_distance(a, b):
-    """Euclidean distance between two creatures in trait space."""
-    if 'trait' in a:
-        return abs(a['trait'] - b['trait'])
-    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a['traits'], b['traits'])))
+def _trait_vector(creature):
+    """The creature's trait values as a tuple, legacy or multi shape."""
+    if 'trait' in creature:
+        return (creature['trait'],)
+    return tuple(creature['traits'])
 
 
 def _random_pos(position_min, position_max):
@@ -101,7 +101,12 @@ def _fire_callbacks(gen, averages, population, elements,
 
 
 def _nearest_neighbour(creature, population):
-    """Return the closest other creature by Euclidean distance, or None if alone."""
+    """Return the closest other creature by Euclidean distance, or None if alone.
+
+    Linear scan — fine for the few per-generation calls that need a single
+    neighbour (mortality); the per-generation all-pairs case should use
+    `_nearest_neighbours` instead.
+    """
     best = None
     best_dist = None
     for other in population:
@@ -112,6 +117,78 @@ def _nearest_neighbour(creature, population):
             best_dist = d
             best = other
     return best
+
+
+def _nearest_neighbours(population):
+    """Nearest spatial neighbour for every creature, via a uniform grid.
+
+    The grid tiles the population's bounding square with about sqrt(N)
+    cells per side; the search expands outward in Chebyshev cell rings
+    and stops once no unexplored ring can hold something closer than the
+    best candidate. Expected O(N) per generation for well-spread
+    populations, versus O(N^2) for per-creature linear scans. Equidistant
+    tie-breaks may pick a different creature than the scan did, which
+    only matters for exact-seed comparisons.
+    """
+    n = len(population)
+    neighbors = [None] * n
+    if n < 2:
+        return neighbors
+    positions = [c['pos'] for c in population]
+    lo_x = min(p[0] for p in positions)
+    hi_x = max(p[0] for p in positions)
+    lo_y = min(p[1] for p in positions)
+    hi_y = max(p[1] for p in positions)
+    span = max(hi_x - lo_x, hi_y - lo_y)
+    if span <= 0.0:
+        # everything stacked on one point: creature 1 is creature 0's
+        # neighbour, and creature 0 is everybody else's
+        return ([population[1]] + [population[0]] * (n - 1))
+    cols = max(1, math.isqrt(n))
+    cell = span / cols + 1e-9  # padding keeps division-by-cell safe
+
+    def cell_of(x, y):
+        return (max(0, min(int((x - lo_x) / cell), cols - 1)),
+                max(0, min(int((y - lo_y) / cell), cols - 1)))
+
+    grid = {}
+    for i, p in enumerate(positions):
+        grid.setdefault(cell_of(p[0], p[1]), []).append(i)
+    for i, p in enumerate(positions):
+        cx, cy = cell_of(p[0], p[1])
+        best_j = None
+        best_d = None
+        r = 0
+        while True:
+            # Chebyshev ring r of cells around (cx, cy)
+            if r == 0:
+                ring = ((0, 0),)
+            else:
+                ring = [(a, -r) for a in range(-r, r + 1)]
+                ring += [(a, r) for a in range(-r, r + 1)]
+                ring += [(-r, b) for b in range(-r + 1, r)]
+                ring += [(r, b) for b in range(-r + 1, r)]
+            for a, b in ring:
+                bucket = grid.get((cx + a, cy + b))
+                if not bucket:
+                    continue
+                for j in bucket:
+                    if j == i:
+                        continue
+                    d = math.dist(p, positions[j])
+                    if best_d is None or d < best_d:
+                        best_d = d
+                        best_j = j
+            r += 1
+            if best_d is not None:
+                # anything in an unexplored ring >= r is at least
+                # (r-1) cells away, so it cannot beat best_d anymore
+                if (r - 1) * cell >= best_d:
+                    break
+            elif r > cols + 1:
+                break  # defensive; every creature is inside this grid
+        neighbors[i] = population[best_j] if best_j is not None else None
+    return neighbors
 
 
 def _prop_value(creature, trait_properties, name):
@@ -184,48 +261,69 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
         v_repel = _prop_value(creature, trait_properties, 'repel')
         repel_radii.append(repel_radius if v_repel is None
                            else repel_radius * max(v_repel, 0.0))
+    # Precompute per-creature arrays once: the inner pair loop then works
+    # on local lists and C-speed math.dist instead of dict lookups.
+    n = len(population)
+    positions = [c['pos'] for c in population]
+    trait_vectors = [_trait_vector(c) for c in population]
+    speeds = [c.get('speed', 1.0) for c in population]
+    sizes = [c.get('size', 1.0) for c in population]
+    if trait_properties:
+        move_speeds = [_prop_value(c, trait_properties, 'move_speed')
+                       for c in population]
+        steers = [_prop_value(c, trait_properties, 'steer')
+                  for c in population]
+        clusters = [_prop_value(c, trait_properties, 'cluster_bias')
+                    for c in population]
+    else:
+        move_speeds = steers = clusters = [None] * n
     displacements = []
-    for i, creature in enumerate(population):
+    for i in range(n):
         dx = 0.0
         dy = 0.0
         rx = 0.0
         ry = 0.0
-        speed = creature.get('speed', 1.0)
-        size = creature.get('size', 1.0)
-        v_speed = _prop_value(creature, trait_properties, 'move_speed')
-        v_steer = _prop_value(creature, trait_properties, 'steer')
-        v_cluster = _prop_value(creature, trait_properties, 'cluster_bias')
+        speed = speeds[i]
+        size = sizes[i]
+        v_speed = move_speeds[i]
+        v_steer = steers[i]
         # attraction gain from cluster_bias
+        v_cluster = clusters[i]
         cluster_gain = (min(abs(v_cluster), 1.0)
                         if v_cluster is not None else 1.0)
         if similarity_scale > 0.0:
             weight_sum = 0.0
             centroid_x = 0.0
             centroid_y = 0.0
-            for j, other in enumerate(population):
+            p = positions[i]
+            px, py = p
+            traits_i = trait_vectors[i]
+            radius_i = repel_radii[i]
+            for j in range(n):
                 if j == i:
                     continue
-                d = _trait_distance(creature, other)
+                d = math.dist(traits_i, trait_vectors[j])
                 if d > cutoff:
                     # dissimilar: keep personal space instead of attracting
-                    d_pos = math.dist(creature['pos'], other['pos'])
-                    pair_radius = max(repel_radii[i], repel_radii[j])
+                    p_other = positions[j]
+                    d_pos = math.dist(p, p_other)
+                    pair_radius = radius_i if radius_i > repel_radii[j] else repel_radii[j]
                     if 0.0 < d_pos < pair_radius:
                         f = (pair_radius - d_pos) / pair_radius
                         # size scales personal space repulsion
-                        rx += f * (creature['pos'][0] - other['pos'][0]) / d_pos * size
-                        ry += f * (creature['pos'][1] - other['pos'][1]) / d_pos * size
+                        rx += f * (px - p_other[0]) / d_pos * size
+                        ry += f * (py - p_other[1]) / d_pos * size
                     continue
                 weight = math.exp(-(d * d) / (2.0 * sigma * sigma))
                 weight_sum += weight
-                centroid_x += weight * other['pos'][0]
-                centroid_y += weight * other['pos'][1]
+                centroid_x += weight * positions[j][0]
+                centroid_y += weight * positions[j][1]
             if weight_sum > 0.0:
                 attraction = min(1.0, weight_sum)
                 dx = move_step * attraction * cluster_gain * (
-                    centroid_x / weight_sum - creature['pos'][0])
+                    centroid_x / weight_sum - px)
                 dy = move_step * attraction * cluster_gain * (
-                    centroid_y / weight_sum - creature['pos'][1])
+                    centroid_y / weight_sum - py)
             # cap the total repulsion at one move_step
             repel_mag = math.hypot(rx, ry)
             if repel_mag > 1.0:
@@ -236,8 +334,8 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
             # steer: extra directed step toward (v > 0) or away (v < 0)
             # from the weighted centroid of similar creatures
             if v_steer is not None and weight_sum > 0.0:
-                to_cx = centroid_x / weight_sum - creature['pos'][0]
-                to_cy = centroid_y / weight_sum - creature['pos'][1]
+                to_cx = centroid_x / weight_sum - px
+                to_cy = centroid_y / weight_sum - py
                 norm = math.hypot(to_cx, to_cy)
                 if norm > 1e-12:
                     dx += move_step * v_steer * to_cx / norm
@@ -429,62 +527,42 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
              element_boost=0.05, element_lifetime=200, element_max=1,
              speed_mean=1.0, speed_std=0.2, speed_mut=None,
              size_mean=1.0, size_std=0.2, size_mut=None):
-    if generations is None and stop_when is None:
-        raise ValueError('stop_when is required when generations is None')
-    if pop_size < 1:
-        raise ValueError('pop_size must be at least 1')
-    if speed_mut is None:
-        speed_mut = mutation_std
-    if size_mut is None:
-        size_mut = mutation_std
-    # Initialize population
-    population = []
-    for _ in range(pop_size):
-        population.append({
-            'trait': random.gauss(initial_mean, initial_std),
-            **_random_body(speed_mean, speed_std, size_mean, size_std),
-            'pos': _random_pos(position_min, position_max),
-        })
-    averages = []
-    element_list = []  # active map elements
-    gen = 0
-    while generations is None or gen < generations:
-        if stop_when is not None and stop_when():
-            break
-        if elements:
-            _update_elements(population, element_list, 1, element_rate,
-                             element_radius, element_boost, element_lifetime,
-                             position_min, position_max, element_max)
-        avg = sum(c['trait'] for c in population) / len(population)
-        averages.append(avg)
-        _fire_callbacks(gen, [avg], population,
-                        element_list if elements else None,
-                        stats_callback, plot_callback, anim_callback)
-        # Reproduce: each creature interacts with its nearest neighbour
-        # (distance-based interaction); the offspring inherits one parent's
-        # trait and is placed between the two parents, then mutates
-        new_pop = []
-        for creature in population:
-            partner = _nearest_neighbour(creature, population)
-            if partner is None:
-                # alone: clone with mutation
-                offspring_trait = creature['trait'] + random.gauss(0.0, mutation_std)
+    """Single-trait simulation (legacy API), backed by simulate_multi.
+
+    Same signature, same return value (list of per-generation trait
+    averages). The only behavioral nuance: `anim_callback` receives
+    population dicts in the legacy flat shape
+    `{'trait': v, 'speed': s, 'size': z, 'pos': [x, y]}` — copies with
+    live `pos` references, so reading them mid-run matches the old API.
+    One wellness rule carries over: `speed_mut` / `size_mut` default to
+    `mutation_std`.
+    """
+    flat_anim = None
+    if anim_callback is not None:
+        def flat_anim(gen, population, elements=None):
+            flat = [{'trait': c['traits'][0],
+                     'speed': c['speed'], 'size': c['size'],
+                     'pos': c['pos']} for c in population]
+            if elements is None:
+                anim_callback(gen, flat)
             else:
-                # interaction: trait from one parent, then mutate
-                offspring_trait = (random.choice((creature['trait'], partner['trait']))
-                                   + random.gauss(0.0, mutation_std))
-            new_pop.append({
-                'trait': offspring_trait,
-                **_inherit_body(creature, partner, speed_mut, size_mut),
-                'pos': _offspring_pos(creature, partner, position_std,
-                                      position_min, position_max),
-            })
-        population = new_pop
-        # Move creatures toward others with similar traits
-        _move_toward_similar(population, similarity_scale, move_step,
-                             position_std, position_min, position_max)
-        gen += 1
-    return averages
+                anim_callback(gen, flat, elements)
+    per_trait = simulate_multi(
+        pop_size=pop_size, generations=generations, num_traits=1,
+        init_means=[initial_mean], init_stds=[initial_std],
+        mutation_stds=[mutation_std],
+        position_std=position_std, position_min=position_min,
+        position_max=position_max, similarity_scale=similarity_scale,
+        move_step=move_step,
+        plot_callback=plot_callback, anim_callback=flat_anim,
+        stop_when=stop_when, stats_callback=stats_callback,
+        elements=elements, element_rate=element_rate,
+        element_radius=element_radius, element_boost=element_boost,
+        element_lifetime=element_lifetime, element_max=element_max,
+        speed_mean=speed_mean, speed_std=speed_std, speed_mut=speed_mut,
+        size_mean=size_mean, size_std=size_std, size_mut=size_mut,
+    )
+    return per_trait[0]
 
 
 def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None, init_stds=None,
@@ -543,9 +621,9 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
         # offspring is placed between the parents
         repro_idx = [i for i, p in enumerate(trait_properties or [])
                      if p == 'repro_boost']
+        neighbors = _nearest_neighbours(population)
         offspring_pop = []
-        for creature in population:
-            partner = _nearest_neighbour(creature, population)
+        for creature, partner in zip(population, neighbors):
             if partner is None:
                 # alone: clone with mutation
                 offspring_traits = [creature['traits'][i] + random.gauss(0.0, mutation_stds[i]) for i in range(num_traits)]

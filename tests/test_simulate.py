@@ -46,6 +46,21 @@ class TestSimulateFunctions(unittest.TestCase):
         # With zero mutation and zero initial std, all values should be exactly initial_mean
         self.assertTrue(all(abs(a - 1.0) < 1e-12 for a in avg))
 
+    def test_simulate_parity_with_multi_engine(self):
+        """simulate() with the same seed reproduces the multi-engine
+        single-trait run bitwise (RNG call order is preserved)."""
+        kwargs = dict(pop_size=9, generations=6, mutation_std=0.05,
+                      initial_mean=1.0, initial_std=0.1,
+                      position_std=0.05, position_min=0.0, position_max=10.0)
+        random.seed(11)
+        legacy = model.simulate(**kwargs)
+        random.seed(11)
+        multi = model.simulate_multi(
+            pop_size=9, generations=6, num_traits=1,
+            init_means=[1.0], init_stds=[0.1], mutation_stds=[0.05],
+            position_std=0.05, position_min=0.0, position_max=10.0)
+        self.assertEqual(legacy, multi[0])
+
     def test_simulate_multi_trait_length(self):
         """Test that simulate_multi returns correct number of generations per trait."""
         pop_size = 15
@@ -66,6 +81,41 @@ class TestSimulateFunctions(unittest.TestCase):
         expected = [0.0, 1.0, 2.0]
         for i, trait_avg in enumerate(avg_per_trait):
             self.assertTrue(all(abs(a - expected[i]) < 1e-12 for a in trait_avg))
+
+    def test_nearest_neighbours_grid_matches_linear_scan(self):
+        """The grid NN agrees with the linear scan on achieved distance,
+        including stacked and clustered configurations."""
+        cases = []
+        # random spread
+        for _ in range(20):
+            n = random.choice([2, 5, 17, 50])
+            cases.append([{'pos': [random.uniform(0.0, 10.0),
+                                   random.uniform(0.0, 10.0)]}
+                          for _ in range(n)])
+        # everything stacked on one point
+        cases.append([{'pos': [3.0, 3.0]} for _ in range(6)])
+        # two far-apart clusters (ring expansion across empty space)
+        cases.append([{'pos': [random.uniform(0.0, 0.2),
+                               random.uniform(0.0, 0.2)]} for _ in range(8)]
+                     + [{'pos': [random.uniform(100.0, 100.2),
+                                 random.uniform(100.0, 100.2)]}
+                        for _ in range(7)])
+        for population in cases:
+            via_grid = model._nearest_neighbours(population)
+            for i, creature in enumerate(population):
+                scan = model._nearest_neighbour(creature, population)
+                if scan is None:
+                    self.assertIsNone(via_grid[i])
+                else:
+                    self.assertAlmostEqual(
+                        math.dist(creature['pos'], via_grid[i]['pos']),
+                        math.dist(creature['pos'], scan['pos']),
+                        places=9)
+
+    def test_nearest_neighbour_plus_one(self):
+        """Reproduction partner is never the creature itself."""
+        pop = [{'traits': [1.0], 'pos': [0.0, 0.0]}]
+        self.assertEqual(model._nearest_neighbours(pop), [None])
 
     def test_positions_stay_within_bounds(self):
         """Positions stay within [position_min, position_max] even with large position_std."""

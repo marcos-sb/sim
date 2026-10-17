@@ -254,14 +254,28 @@ per trait plus measured speed/size averages.
 
 ## Performance
 
-Nearest-neighbor search and similarity movement are O(N²) per generation
-(`_nearest_neighbour`, `_move_toward_similar`, pairwise `spread` stats).
-Measured on this machine (5 generations, default movement): N=100 ~0.03s,
-N=200 ~0.09s, N=400 ~0.36s. N≤500 is comfortable; N≥2000 gets slow. If you
-need larger populations, consider a spatial index (`scipy.spatial.cKDTree`)
-— left out intentionally to keep runtime deps to `numpy` + `matplotlib`.
+Two-tier cost per generation:
+
+- Reproduction uses a uniform spatial grid (`_nearest_neighbours`): tiles
+  the map with ~sqrt(N) cells, expands outward in rings until no
+  unexplored ring can hold something closer. Expected O(N) for
+  well-spread populations (pure stdlib — no scipy).
+- Similarity movement and `spread` stats stay O(N²) pairwise, but with
+  per-call precomputed arrays and C-speed `math.dist` on trait vectors.
+
+Measured on this machine (5 generations, default movement, before →
+after): N=100 0.042 → 0.016s, N=200 0.165 → 0.047s, N=400 0.654 → 0.176s,
+N=1000 4.06 → 1.04s. N≤1000 is comfortable now; beyond that the O(N²)
+movement dominates — a trait-space spatial index or numpy vectorization
+would be the next step, intentionally left out to keep runtime deps to
+`numpy` + `matplotlib`.
 
 ## Python API
+
+Single and multi share one engine: `simulate()` is a single-trait call into
+`simulate_multi(num_traits=1)` — same signature, same RNG stream, and its
+`anim_callback` still receives creatures in the legacy flat
+`{'trait': ..., 'pos': ...}` shape.
 
 ```python
 from simulate import simulate, simulate_multi
