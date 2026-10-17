@@ -39,6 +39,11 @@ def make_plot_handler(ax, plt, interval):
         ax.grid(True, linestyle='--', alpha=0.5)
         for i, line in enumerate(lines):
             line.set_data(gen_data, trait_data[i])
+        # set_data() does not rescale the axes: without an explicit
+        # re-autoscale the view stays at the empty (0,1) limits and the
+        # line is drawn outside the visible area
+        ax.relim()
+        ax.autoscale_view()
         plt.pause(interval)
 
     return plot_callback, text
