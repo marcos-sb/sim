@@ -307,7 +307,7 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
                     # dissimilar: keep personal space instead of attracting
                     p_other = positions[j]
                     d_pos = math.dist(p, p_other)
-                    pair_radius = radius_i if radius_i > repel_radii[j] else repel_radii[j]
+                    pair_radius = max(repel_radii[j], radius_i)
                     if 0.0 < d_pos < pair_radius:
                         f = (pair_radius - d_pos) / pair_radius
                         # size scales personal space repulsion
