@@ -154,6 +154,53 @@ class TestConfigValidation(unittest.TestCase):
         finally:
             os.remove(path)
 
+    def test_hunter_defaults_disabled(self):
+        path = _write_cfg("[traits]\ninit_means = [0.0]\n")
+        try:
+            cfg = load_config(path)
+        finally:
+            os.remove(path)
+        self.assertFalse(cfg["hunter_enabled"])
+        self.assertEqual(cfg["hunter_speed"], 0.2)
+        self.assertEqual(cfg["hunter_radius"], 1.0)
+
+    def test_hunter_section_values_prefixed(self):
+        path = _write_cfg("[hunter]\nenabled = true\nspeed = 0.4\nradius = 2.5\n")
+        try:
+            cfg = load_config(path)
+        finally:
+            os.remove(path)
+        self.assertTrue(cfg["hunter_enabled"])
+        self.assertEqual(cfg["hunter_speed"], 0.4)
+        self.assertEqual(cfg["hunter_radius"], 2.5)
+
+    def test_hunter_sections_do_not_clobber_elements(self):
+        """[hunter].enabled/radius must not overwrite [elements] values."""
+        path = _write_cfg(
+            "[hunter]\nenabled = true\nradius = 3.0\n\n"
+            "[elements]\nenabled = true\nradius = 0.5\n"
+        )
+        try:
+            cfg = load_config(path)
+        finally:
+            os.remove(path)
+        self.assertTrue(cfg["hunter_enabled"])
+        self.assertEqual(cfg["hunter_radius"], 3.0)
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["radius"], 0.5)
+
+    def test_hunter_unknown_key_rejected(self):
+        path = _write_cfg("[hunter]\njump = 1\n")
+        try:
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(path)
+            self.assertIn("jump", str(ctx.exception))
+        finally:
+            os.remove(path)
+
+    def test_template_documents_hunter(self):
+        self.assertIn("[hunter]", template())
+
     def test_missing_file_named(self):
         with self.assertRaises(ConfigError) as ctx:
             load_config("definitely_not_here.toml")

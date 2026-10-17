@@ -83,12 +83,21 @@ def _offspring_pos(creature, partner, position_std, position_min, position_max):
 
 
 def _fire_callbacks(
-    gen, averages, population, elements, stats_callback, plot_callback, anim_callback
+    gen,
+    averages,
+    population,
+    elements,
+    stats_callback,
+    plot_callback,
+    anim_callback,
+    hunter=None,
 ):
     """Dispatch the per-generation stats/plot/animation callbacks.
 
     elements is the active element list, or None when disabled: stats then
     carry no element count and the animation gets no element overlay.
+    hunter (when not None) is passed on to the animation callback as a
+    fourth argument for the hunter overlay.
     """
     if stats_callback:
         stats = _population_stats(population)
@@ -98,7 +107,9 @@ def _fire_callbacks(
     if plot_callback:
         plot_callback(gen, averages)
     if anim_callback:
-        if elements is not None:
+        if hunter is not None:
+            anim_callback(gen, population, elements, hunter)
+        elif elements is not None:
             anim_callback(gen, population, elements)
         else:
             anim_callback(gen, population)
@@ -446,6 +457,12 @@ def _update_elements(
     elements exist, no new ones spawn, so elements are never
     evicted early.
 
+    Element kinds: 'food' (boost > 0) and 'toxin' (boost < 0) shift the
+    targeted trait, 'mutagen' jitters every trait around the creature's
+    current values (|boost| scales the jitter sigma), and 'beacon' is
+    skipped here (it pulls selection, not trait values). Elements
+    without a kind keep the legacy boost-sign interpretation.
+
     Creatures carrying the element_resist property scale the boost by
     (1 - clamp(|v|, 0, 1)): v=0 feels the full boost, v=1 is immune.
     """
@@ -466,6 +483,7 @@ def _update_elements(
                 "radius": radius,
                 "boost": boost,
                 "lifetime": lifetime,
+                "kind": "food" if boost >= 0 else "toxin",
             }
         )
     # apply boosts with linear falloff inside the radius
@@ -474,9 +492,19 @@ def _update_elements(
         for element in elements:
             d = math.dist(creature["pos"], element["pos"])
             if d < element["radius"]:
+                kind = element.get("kind", "food" if element["boost"] >= 0 else "toxin")
+                if kind == "beacon":
+                    continue  # optimum source, not a boost
                 amount = element["boost"] * (1.0 - d / element["radius"])
                 if v_resist is not None:
                     amount *= 1.0 - min(abs(v_resist), 1.0)
+                if kind == "mutagen":
+                    # Gaussian jitter around the current values
+                    sigma = abs(amount)
+                    if sigma > 0.0 and "traits" in creature:
+                        for i in range(num_traits):
+                            creature["traits"][i] += random.gauss(0.0, sigma)
+                    continue
                 if amount == 0.0:
                     continue
                 if "trait" in creature:
@@ -503,6 +531,20 @@ def _decay_traits(population, trait_properties):
             v = creature["traits"][i]
             decay = min(0.5, abs(v) * 0.1)
             creature["traits"][i] = v * (1.0 - decay)
+
+
+def _replace_with_neighbour_clone(
+    population, idx, mutation_stds, speed_mut, size_mut, position_std, position_min, position_max
+):
+    """Replace population[idx] with a mutated clone of its nearest
+    neighbour (self-clone when alone), so the population size stays
+    constant while the neighborhood's winning lineage takes the slot."""
+    donor = _nearest_neighbour(population[idx], population) or population[idx]
+    population[idx] = {
+        "traits": [t + random.gauss(0.0, m) for t, m in zip(donor["traits"], mutation_stds)],
+        **_inherit_body(donor, None, speed_mut, size_mut),
+        "pos": _offspring_pos(donor, None, position_std, position_min, position_max),
+    }
 
 
 def _apply_mortality(
@@ -534,16 +576,127 @@ def _apply_mortality(
         death_p = min(0.5, 1.0 / (abs(v) * 20.0))
         if random.random() < death_p:
             died = True
-            donor = _nearest_neighbour(creature, population) or creature
-            offspring_traits = [
-                t + random.gauss(0.0, m) for t, m in zip(donor["traits"], mutation_stds)
-            ]
-            population[idx] = {
-                "traits": offspring_traits,
-                **_inherit_body(donor, None, speed_mut, size_mut),
-                "pos": _offspring_pos(donor, None, position_std, position_min, position_max),
-            }
+            _replace_with_neighbour_clone(
+                population,
+                idx,
+                mutation_stds,
+                speed_mut,
+                size_mut,
+                position_std,
+                position_min,
+                position_max,
+            )
     return died
+
+
+def _update_hunter(
+    hunter,
+    population,
+    radius,
+    speed,
+    position_std,
+    position_min,
+    position_max,
+    mutation_stds,
+    speed_mut,
+    size_mut,
+):
+    """One generation of hunter behavior: drift toward the nearest
+    creature (a `speed` fraction of the way, plus the usual positional
+    jitter) and kill it when it is within `radius` — the killed
+    creature's slot is refilled by a mutated clone of its nearest
+    neighbour, so the population size stays constant.
+
+    Returns True when a kill happened this generation.
+    """
+    if not population:
+        return False
+    target = _nearest_neighbour(hunter, population)
+    if target is not None:
+        hunter["pos"] = [
+            _clamp(
+                h + (t - h) * speed + random.gauss(0.0, position_std), position_min, position_max
+            )
+            for h, t in zip(hunter["pos"], target["pos"])
+        ]
+    victim_idx = None
+    best_d = None
+    for idx, creature in enumerate(population):
+        d = math.dist(hunter["pos"], creature["pos"])
+        if best_d is None or d < best_d:
+            best_d = d
+            victim_idx = idx
+    if best_d is not None and best_d <= radius:
+        _replace_with_neighbour_clone(
+            population,
+            victim_idx,
+            mutation_stds,
+            speed_mut,
+            size_mut,
+            position_std,
+            position_min,
+            position_max,
+        )
+        return True
+    return False
+
+
+def _effective_optimum(pos, optimum, beacons):
+    """Per-offspring selection target: the nearest beacon whose radius
+    contains pos wins; otherwise the global optimum applies."""
+    best = None
+    best_d = None
+    for beacon in beacons:
+        d = math.dist(pos, beacon["pos"])
+        if d < beacon["radius"] and (best_d is None or d < best_d):
+            best_d = d
+            best = beacon
+    if best is not None:
+        return best["traits"]
+    return optimum
+
+
+def _capture_beacon_traits(pos, radius, population):
+    """Trait vector a newly placed beacon imprints: the mean of the
+    creatures already inside its radius (population mean as fallback),
+    so a beacon pulls its neighborhood toward what it looked like when
+    the beacon was laid down."""
+    vals = [c["traits"] for c in population if math.dist(c["pos"], pos) <= radius]
+    if not vals:
+        vals = [c["traits"] for c in population]
+    num_traits = len(population[0]["traits"])
+    return [sum(v[k] for v in vals) / len(vals) for k in range(num_traits)]
+
+
+def _process_controls(controls, element_list, population):
+    """Apply pending player requests (spawn/erase/save) at generation
+    start. Player-spawned elements bypass the auto-spawn cap; they
+    expire like any other element."""
+    for req in controls.pop_requests():
+        op = req["op"]
+        if op == "spawn":
+            entry = {
+                "pos": list(req["pos"]),
+                "trait": req["trait"],
+                "radius": req["radius"],
+                "boost": req["boost"],
+                "lifetime": req["lifetime"],
+                "kind": req["kind"],
+            }
+            if req["kind"] == "beacon":
+                entry["traits"] = _capture_beacon_traits(req["pos"], req["radius"], population)
+            element_list.append(entry)
+        elif op == "erase":
+            hits = [
+                (math.dist(e["pos"], req["pos"]), i)
+                for i, e in enumerate(element_list)
+                if math.dist(e["pos"], req["pos"]) < e["radius"]
+            ]
+            if hits:
+                _, idx = min(hits)
+                del element_list[idx]
+        elif op == "save":
+            controls.save_requested = True
 
 
 def simulate(
@@ -660,6 +813,11 @@ def simulate_multi(
     size_std=0.2,
     size_mut=None,
     trait_properties=None,
+    hunter_enabled=False,
+    hunter_speed=0.2,
+    hunter_radius=1.0,
+    controls=None,
+    wait_callback=None,
 ):
     if generations is None and stop_when is None:
         raise ValueError("stop_when is required when generations is None")
@@ -684,10 +842,41 @@ def simulate_multi(
     # We'll track averages per trait per generation
     averages_per_trait = [[] for _ in range(num_traits)]
     element_list = []  # active map elements
+    hunter_state = None
+    if hunter_enabled:
+        hunter_state = {"pos": _random_pos(position_min, position_max)}
     gen = 0
     while generations is None or gen < generations:
         if stop_when is not None and stop_when():
             break
+        # pause/step gate: the interactive CLI blocks here while paused
+        if wait_callback is not None:
+            wait_callback()
+        # per-generation dials: multipliers on the config values (1.0 = as
+        # configured); the optimum override is absolute trait space
+        mut_stds_gen = mutation_stds
+        strength_gen = selection_strength
+        optimum_gen = optimum
+        if controls is not None:
+            _process_controls(controls, element_list, population)
+            if controls.mutation_mult != 1.0:
+                mut_stds_gen = [m * controls.mutation_mult for m in mutation_stds]
+            strength_gen = selection_strength * controls.selection_mult
+            if strength_gen > 0.0 and controls.optimum_override is not None:
+                optimum_gen = list(controls.optimum_override)
+        if hunter_state is not None:
+            _update_hunter(
+                hunter_state,
+                population,
+                hunter_radius,
+                hunter_speed,
+                position_std,
+                position_min,
+                position_max,
+                mut_stds_gen,
+                speed_mut,
+                size_mut,
+            )
         if elements:
             _update_elements(
                 population,
@@ -716,6 +905,7 @@ def simulate_multi(
             stats_callback,
             plot_callback,
             anim_callback,
+            hunter_state,
         )
         # Reproduce: each creature interacts with its nearest neighbour
         # (distance-based interaction); each trait is inherited from one of
@@ -729,7 +919,7 @@ def simulate_multi(
             if partner is None:
                 # alone: clone with mutation
                 offspring_traits = [
-                    creature["traits"][i] + random.gauss(0.0, mutation_stds[i])
+                    creature["traits"][i] + random.gauss(0.0, mut_stds_gen[i])
                     for i in range(num_traits)
                 ]
             else:
@@ -746,7 +936,7 @@ def simulate_multi(
                         parent_value = own_v if random.random() < p_own else partner_v
                     else:
                         parent_value = random.choice((own_v, partner_v))
-                    offspring_traits.append(parent_value + random.gauss(0.0, mutation_stds[i]))
+                    offspring_traits.append(parent_value + random.gauss(0.0, mut_stds_gen[i]))
             offspring_pop.append(
                 {
                     "traits": offspring_traits,
@@ -757,12 +947,15 @@ def simulate_multi(
                 }
             )
         # Apply selection if needed
-        if selection_strength > 0.0:
-            # compute fitness for each offspring
+        if strength_gen > 0.0 and optimum_gen is not None:
+            # compute fitness for each offspring; a beacon covering the
+            # offspring's position overrides the selection optimum
+            beacons = [e for e in element_list if e.get("kind") == "beacon"]
             fitnesses = []
             for ind in offspring_pop:
-                sq_dist = sum((ind["traits"][i] - optimum[i]) ** 2 for i in range(num_traits))
-                fitness = math.exp(-selection_strength * sq_dist)
+                target = _effective_optimum(ind["pos"], optimum_gen, beacons)
+                sq_dist = sum((ind["traits"][i] - target[i]) ** 2 for i in range(num_traits))
+                fitness = math.exp(-strength_gen * sq_dist)
                 fitnesses.append(fitness)
             # Weighted random sampling to choose next generation.
             # Copy: choices() samples with replacement, and sharing one
@@ -786,7 +979,7 @@ def simulate_multi(
             position_std,
             position_min,
             position_max,
-            mutation_stds,
+            mut_stds_gen,
             speed_mut,
             size_mut,
         )

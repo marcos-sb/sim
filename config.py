@@ -113,6 +113,11 @@ _ELEMENTS = {
     "lifetime": lambda v, n: _int_value(v, n, 1),
     "max": lambda v, n: _int_value(v, n, 0),
 }
+_HUNTER = {
+    "enabled": _bool_value,
+    "speed": lambda v, n: _num_value(v, n),
+    "radius": lambda v, n: _num_value(v, n),
+}
 _SCALAR_SECTIONS = {
     "run": ({"pop_size": 100, "generations": 100}, _RUN),
     "space": (
@@ -146,6 +151,10 @@ _SCALAR_SECTIONS = {
             "max": 1,
         },
         _ELEMENTS,
+    ),
+    "hunter": (
+        {"enabled": False, "speed": 0.2, "radius": 1.0},
+        _HUNTER,
     ),
 }
 
@@ -251,7 +260,9 @@ def load_config(path):
     for section_name, (defaults, validators) in _SCALAR_SECTIONS.items():
         section_data = raw.get(section_name, {})
         for key, value in _section(section_data, section_name, defaults, validators):
-            resolved[key] = value
+            # [hunter] shares key names with [elements] (enabled, radius):
+            # keep its flat keys prefixed to avoid the collision
+            resolved[f"hunter_{key}" if section_name == "hunter" else key] = value
 
     if "traits" in raw:
         resolved["traits"] = _check_traits(raw["traits"])
@@ -311,4 +322,14 @@ radius   = 1.0          # effect radius
 boost    = 0.05         # gain at center, linear falloff to edge
 lifetime = 200          # generations an element persists
 max      = 5            # hard cap on simultaneous elements
+
+# Optional roaming predator: each generation it drifts toward the
+# nearest creature and, when one is inside its radius, kills it (the
+# population slot is refilled by a mutated clone of a neighbour).
+# Tunable in the config, placeable in --interactive runs.
+# [hunter]
+# enabled = false        # off by default
+# speed   = 0.2          # fraction of the distance to its target per
+#                        # generation (plus the usual positional jitter)
+# radius  = 1.0          # kill radius
 """

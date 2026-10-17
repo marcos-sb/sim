@@ -33,6 +33,12 @@ does to the creature (`move_speed`, `steer`, `survival_decay`,
   `[position_min, position_max]`.
 - Map elements: randomly spawned boosters/harms with
   `rate / radius / boost / lifetime / max`, linear falloff to the edge.
+- Optional `[hunter]`: a roaming predator (config-tuned, disabled by
+  default) that kills the nearest creature in reach each generation.
+- Interactive mode (`--interactive`): pause/step, live selection/mutation
+  dials, mouse placement of food / toxins / mutagens / optimum beacons,
+  per-trait optimum sliders, and snapshot saving (see
+  [Interactive mode](#interactive-mode)).
 - Live outputs: `--live-plot` trait-average line chart, `--animate` 2D map
   (`color = trait`, `size = size`, `X` = elements), live stats textbox.
 - CSV output + `visualize.py` offline plotter.
@@ -143,6 +149,12 @@ radius   = 1.0          # effect radius
 boost    = 0.05         # gain at center, linear falloff to edge
 lifetime = 200          # generations an element persists
 max      = 5            # hard cap on simultaneous elements
+
+# [hunter]               # optional roaming predator, off by default
+# enabled = false
+# speed   = 0.2         # fraction of the distance to its target per
+#                        # generation (plus the usual positional jitter)
+# radius  = 1.0          # kill radius
 ```
 
 Notes:
@@ -168,6 +180,9 @@ Notes:
                       --generations instead of running until the plot
                       window closes (agents, scripts, SSH)
 --interval SEC        pause between generations when a plot is shown
+--interactive         mouse/keyboard control of the run (see
+                      "Interactive mode"); implies --animate and
+                      refuses a non-interactive backend
 --elements            enable [elements] (equivalent to enabled = true)
 --element-rate / --element-radius / --element-boost /
 --element-lifetime / --element-max
@@ -245,6 +260,68 @@ python3 simulate.py --config sim.toml --live-plot --animate --elements
   restores the cap for headless contexts. In the Python API,
   `generations=None` requires `stop_when`.
 
+## Interactive mode
+
+`python3 simulate.py --config sim.toml --interactive` runs the same
+engine with a live control surface. It implies `--animate` and refuses to
+start without an interactive matplotlib backend (TkAgg/Qt5Agg/macOS).
+Everything interactive is layered on top of the config: `sim.toml` stays
+the base, the dials are *multipliers* on its values, and a saved snapshot
+bakes the current state and multipliers into a runnable `sim.toml`.
+
+### Tools (mouse + number keys)
+
+| key | tool | effect |
+|-----|------|--------|
+| `1` | food | boosts the targeted trait of creatures in the radius (positive) |
+| `2` | toxin | same but with a negative boost |
+| `3` | mutagen | Gaussian jitter of every trait; magnitude scales with distance inside the radius |
+| `4` | beacon | captures the current phenotype of nearby creatures and pulls selection inside its radius toward that snapshot (nearest beacon wins) |
+| `x` | erase | the next click deletes the nearest element it lands on |
+
+Click to place an element with `[elements].radius`; press-drag-release
+places it with the drag distance as its radius. `n` cycles the targeted
+trait (`trait {k}` in the HUD). Player elements bypass the auto-spawn
+`max` cap but expire like any other element.
+
+### Dials and run control (keyboard)
+
+| key | action |
+|-----|--------|
+| `space` | pause / resume |
+| `s` | run one generation while paused |
+| `[` / `]` | selection-strength multiplier (-0.25 step, 0–8) |
+| `,` / `.` | mutation-rate multiplier (-0.25 step, 0–8) |
+| `-` / `=` | slower / faster pause time (animation speed) |
+| `w` | write `snapshot.toml`: population means/stds + current multipliers + effective optimum, loadable with `--config` |
+
+The per-trait optimum can also be tuned with sliders in a small second
+window (absolute trait values; raises `[ ]` first if
+`selection_strength` is 0 — pure drift ignores the optimum). Closing
+either window ends the run, as with `--animate`.
+
+### Hunter
+
+`[hunter] enabled = true` turns on the predator even in headless runs:
+
+- each generation it drifts `<speed>` of the way toward the nearest
+  creature (plus the usual positional jitter);
+- any creature within `radius` is killed — its slot is refilled by a
+  mutated clone of its nearest neighbour, so the population size stays
+  constant and the predator indirectly selects for survival, not just
+  the optimum.
+- With `--interactive` it is drawn as a black marker; the dials do not
+  affect it.
+
+### Notes
+
+- Headless (no `--interactive`) runs behave exactly as before; the hunter
+  is the only interactive-era feature that is config-driven.
+- `--interactive --plot-block` is allowed: the run then stops at
+  `--generations` instead of running until the window closes.
+- Erase and element placement only apply to the element list — beacons
+  that an erase click removes stop affecting selection immediately.
+
 ## Output format
 
 `generation,trait0_avg,...,trait{N-1}_avg,speed_avg,size_avg` — one column
@@ -300,13 +377,17 @@ simulate(..., plot_callback=lambda gen, averages: ...,
 ```
 
 `simulate_multi` accepts everything `simulate()` does plus `num_traits`,
-per-trait lists, `optimum` / `selection_strength`, and `trait_properties`.
+per-trait lists, `optimum` / `selection_strength`, `trait_properties`,
+and the interactive/engine extras `hunter_enabled` / `hunter_speed` /
+`hunter_radius`, `controls` (a `Controls` object from `controls.py`)
+and `wait_callback` (a pause/step gate called before every generation).
 With `elements=True`, `stats` includes `elements`, and `anim_callback`
-receives `(gen, population, elements)`.
+receives `(gen, population, elements)`; when the hunter is on it also
+receives the hunter dict as a fourth argument.
 
 ## Tests
 
-87 tests, all passing:
+131 tests, all passing:
 
 ```bash
 python3 -m pytest -q
@@ -318,20 +399,26 @@ Covers reproduction/inheritance, position bounds/midpoints, movement,
 selection, trait-property hooks (`survival_decay`, `element_resist`,
 `repro_boost`, `steer`, `move_speed`, `repel`, `cluster_bias`,
 `life_expect`), config validation and CLI precedence, elements, stats
-formatting, CSV output, seed reproducibility, and `--live-plot` /
-`--animate` callback wiring (mocked `matplotlib`).
+formatting, CSV output, seed reproducibility, `--live-plot` /
+`--animate` callback wiring (mocked `matplotlib`), and the interactive
+stack (`controls.py` state machine, snapshot TOML roundtrip,
+controls-driven mutation/selection effects, hunter kills, beacon
+optimum capture/selection, CLI wiring incl. snapshot save and backend
+refusal, mouse/keyboard handler dispatch).
 
 ## Project structure
 
 ```text
 model.py          # evolution model: reproduction, movement, selection,
-                  # elements, trait-property hooks
+                  # elements, trait-property hooks, hunter, beacons
+controls.py       # interactive state (tools, dials, requests, snapshot)
 config.py         # sim.toml load/validate (tomllib), starter template
-live_viz.py       # live matplotlib handlers (line chart + 2D animation)
-simulate.py       # config-first thin CLI (argparse, CSV output);
-                  # re-exports the model API
+live_viz.py       # live matplotlib handlers (line chart, 2D animation,
+                  # mouse/keyboard event binding)
+simulate.py       # config-first thin CLI (argparse, CSV output,
+                  # --interactive wiring); re-exports the model API
 visualize.py      # offline CSV -> matplotlib line chart (--traits, --with-body)
-tests/            # behavior, callback/wiring, and config tests
+tests/            # behavior, callback/wiring, config, and controls tests
 pyproject.toml    # packaging, deps, pytest/ruff/black config
 LICENSE           # MIT
 traits.csv        # example multi-trait output (ignored by git)

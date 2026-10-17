@@ -20,7 +20,13 @@ except ImportError:
 
 import config as config_mod
 from config import ConfigError, template
-from live_viz import fix_axis_to_position_range, make_anim_handler, make_plot_handler
+from controls import DEFAULT_SNAPSHOT, Controls, snapshot_text
+from live_viz import (
+    bind_interactive_controls,
+    fix_axis_to_position_range,
+    make_anim_handler,
+    make_plot_handler,
+)
 from model import (
     _format_stats,
     _print_trait_summary,
@@ -38,6 +44,39 @@ __all__ = [
     "simulate",
     "simulate_multi",
 ]
+
+
+def _build_optimum_sliders(plt, controls, num_traits, base_optimum):
+    """Small second window with one absolute slider per trait, wired to
+    the optimum override (beacons are the headline tool; these are the
+    precision instrument). Note: closing either window ends the run —
+    the stop check counts open figures."""
+    base = list(base_optimum) if base_optimum is not None else [0.0] * num_traits
+    from matplotlib.widgets import Slider
+
+    fig = plt.figure(figsize=(4.0, 0.9 + 0.55 * num_traits))
+    vector = list(base)
+
+    def on_changed(idx):
+        def changed(val):
+            vector[idx] = float(val)
+            controls.set_optimum_override(vector)
+
+        return changed
+
+    top = 0.85
+    step = 0.7 / max(num_traits, 1)
+    for i in range(num_traits):
+        ax = fig.add_axes([0.30, top - i * step, 0.60, 0.03])
+        slider = Slider(
+            ax,
+            f"trait {i}",
+            base[i] - 3.0,
+            base[i] + 3.0,
+            valinit=base[i],
+            valfmt="%+.2f",
+        )
+        slider.on_changed(on_changed(i))
 
 
 def main():
@@ -92,6 +131,14 @@ def main():
         "window is available (agents, scripts, SSH).",
     )
     parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Run with mouse/keyboard controls: place food, toxins, "
+        "mutagens and optimum beacons on the map, tune selection/mutation "
+        "dials live, pause/step, and write snapshot.toml (key w). "
+        "Implies --animate; needs an interactive backend.",
+    )
+    parser.add_argument(
         "--interval",
         type=float,
         default=0.05,
@@ -112,6 +159,10 @@ def main():
     )
     parser.add_argument("--element-max", type=int, default=None, help="Override [elements].max")
     args = parser.parse_args()
+
+    # --interactive is --animate plus controls
+    if args.interactive:
+        args.animate = True
 
     if args.config_template:
         print(template())
@@ -169,6 +220,12 @@ def main():
     show_plot = False
     plot_callback = None
     stats_texts = []  # text boxes showing live stats, one per plot window
+    controls = None
+
+    # Zero-arg pause-time provider: with --interactive the -/= speed keys
+    # rerate it live; handlers accept a callable or a plain float
+    def pause_seconds():
+        return args.interval * (controls.interval_scale if controls is not None else 1.0)
 
     # Prepare live plot (line chart) if requested
     if args.live_plot:
@@ -182,7 +239,7 @@ def main():
         show_plot = True
         plt.ion()
         _, ax = plt.subplots(figsize=(10, 6))
-        plot_callback, text = make_plot_handler(ax, plt, args.interval)
+        plot_callback, text = make_plot_handler(ax, plt, pause_seconds)
         stats_texts.append(text)
     # Prepare animation if requested
     if args.animate:
@@ -210,6 +267,12 @@ def main():
             )
         # If still non-interactive, we cannot show animation; warn and disable
         if matplotlib.get_backend() == "Agg":
+            if args.interactive:
+                sys.exit(
+                    "Error: --interactive needs an interactive matplotlib backend "
+                    "(a window it can show and click into). Install TkAgg or "
+                    "Qt5Agg, or drop MPLBACKEND=Agg."
+                )
             sys.stderr.write(
                 "Warning: Animation will not be visible because no interactive matplotlib backend is available. Consider installing TkAgg or Qt5Agg backend. Disabling animation."
             )
@@ -218,15 +281,25 @@ def main():
             plt_module = plt
             show_plot = True
             plt.ion()
-            _, ax = plt.subplots(figsize=(8, 8))
+            fig, ax = plt.subplots(figsize=(8, 8))
             # Positions are clamped to [position_min, position_max] in the
             # simulation, so fix the axis once: a single stray creature would
             # otherwise stretch the whole view
             fix_axis_to_position_range(ax, cfg["position_min"], cfg["position_max"])
             anim_callback, text = make_anim_handler(
-                ax, plt, np, cm, cfg["position_min"], cfg["position_max"], args.interval
+                ax, plt, np, cm, cfg["position_min"], cfg["position_max"], pause_seconds
             )
             stats_texts.append(text)
+            if args.interactive:
+                controls = Controls(
+                    num_traits,
+                    default_radius=cfg["radius"],
+                    default_boost=abs(cfg["boost"]),
+                    default_lifetime=cfg["lifetime"],
+                )
+                bind_interactive_controls(fig, controls)
+                if num_traits > 0:
+                    _build_optimum_sliders(plt, controls, num_traits, traits["optimum"])
     else:
         anim_callback = None
     stats_cb = None
@@ -234,10 +307,27 @@ def main():
 
         def stats_callback(gen, stats):
             line = _format_stats(gen, stats)
+            if controls is not None:
+                line = f"{line}\n{controls.hud_line()}"
             for text in stats_texts:
                 text.set_text(line)
 
         stats_cb = stats_callback
+
+    # Interactive pause/step gate: blocks in plt.pause while paused (so
+    # the window stays responsive) and releases for one generation per
+    # pending 's' step request.
+    wait_callback = None
+    if controls is not None:
+
+        def wait_gate():
+            while controls.paused and controls.steps <= 0:
+                plt_module.pause(pause_seconds())
+            if controls.steps > 0:
+                controls.steps -= 1
+            return True
+
+        wait_callback = wait_gate
 
     # With a visible plot window, keep simulating until the user closes it;
     # otherwise cap the run at the requested generation count
@@ -274,6 +364,28 @@ def main():
     def record_stats(gen, stats):
         speed_hist.append(stats["speed_avg"])
         size_hist.append(stats["size_avg"])
+        if controls is not None and controls.take_save():
+            # key w: write an evolved-state sim.toml (population snapshot
+            # + current dial multipliers + effective optimum)
+            optimum = (
+                list(controls.optimum_override)
+                if controls.optimum_override is not None
+                else traits["optimum"]
+            )
+            payload = snapshot_text(
+                stats["averages"],
+                stats["stds"],
+                traits["mutation_stds"],
+                traits["selection_strength"],
+                traits["properties"],
+                optimum,
+                cfg["pop_size"],
+                controls.mutation_mult,
+                controls.selection_mult,
+            )
+            with open(DEFAULT_SNAPSHOT, "w") as fh:
+                fh.write(payload)
+            print(f"Snapshot written to {DEFAULT_SNAPSHOT}")
         if stats_cb is not None:
             stats_cb(gen, stats)
 
@@ -308,6 +420,11 @@ def main():
         size_std=cfg["size_std"],
         size_mut=cfg["size_mutation"],
         trait_properties=properties,
+        hunter_enabled=cfg["hunter_enabled"],
+        hunter_speed=cfg["hunter_speed"],
+        hunter_radius=cfg["hunter_radius"],
+        controls=controls,
+        wait_callback=wait_callback,
     )
 
     # Write CSV: one column per trait plus speed/size averages

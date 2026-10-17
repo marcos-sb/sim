@@ -1,11 +1,14 @@
 import os
 import sys
+import tomllib
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import matplotlib.pyplot  # noqa: F401  (load-bearing: @patch target needs it)
 
 import simulate
+from controls import Controls
 
 
 class TestCallbacks(unittest.TestCase):
@@ -598,6 +601,278 @@ class TestCallbacks(unittest.TestCase):
             simulate.simulate_multi = original_multi
         self.assertIsNone(captured["generations"])
         self.assertTrue(callable(captured["stop_when"]))
+
+
+class TestInteractiveCli(unittest.TestCase):
+    """--interactive wiring: controls object, gate, HUD, snapshots, refusals."""
+
+    STUB_STATS = {  # noqa: RUF012
+        "averages": [1.0],
+        "stds": [0.0],
+        "spread": 1.0,
+        "speed_avg": 1.0,
+        "speed_std": 0.0,
+        "size_avg": 1.0,
+        "size_std": 0.0,
+    }
+
+    def setUp(self):
+        self.test_output = "test_output_i.csv"
+        self.test_cfg = "test_interactive.toml"
+        with open(self.test_cfg, "w") as f:
+            f.write(
+                "[run]\ngenerations = 1\n"
+                "[traits]\ninit_means = [1.0]\ninit_stds = [0.1]\n"
+                "mutation_stds = [0.1]\n"
+            )
+
+    def tearDown(self):
+        for path in (self.test_output, self.test_cfg, "test_snapshot.toml"):
+            if os.path.exists(path):
+                os.remove(path)
+
+    def _run_interactive(self, mock_plt, on_run=None):
+        """Run main with --interactive and mocked pyplot; return the captured
+        simulate_multi kwargs plus the mocked figure/axes. `on_run(kwargs)`
+        lets a test script the fake simulation (call callbacks, set flags)."""
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        original_multi = simulate.simulate_multi
+        captured = {}
+
+        def mock_multi(*args, **kwargs):
+            captured.update(kwargs)
+            if on_run is not None:
+                on_run(kwargs)
+            return [[1.0]]
+
+        simulate.simulate_multi = mock_multi
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = [
+                "simulate.py",
+                "--config",
+                self.test_cfg,
+                "--interactive",
+                "--plot-block",
+                "--pop-size",
+                "2",
+                "--output",
+                self.test_output,
+            ]
+            simulate.main()
+        finally:
+            sys.argv = old_argv
+            simulate.simulate_multi = original_multi
+        return captured, mock_fig, mock_ax
+
+    @patch("matplotlib.widgets.Slider")
+    @patch("matplotlib.pyplot")
+    def test_interactive_wires_controls_gate_and_bindings(self, mock_plt, _mock_slider):
+        captured, mock_fig, _ = self._run_interactive(mock_plt)
+        controls = captured.get("controls")
+        self.assertIsInstance(controls, Controls)
+        gate = captured.get("wait_callback")
+        self.assertTrue(callable(gate))
+        # three event hooks bound onto the animation canvas
+        bound = {call.args[0] for call in mock_fig.canvas.mpl_connect.call_args_list}
+        self.assertEqual(bound, {"key_press_event", "button_press_event", "button_release_event"})
+        # a separate slider window was opened
+        self.assertTrue(mock_plt.figure.called)
+        # the gate runs a full generation when awake...
+        controls.steps = 1
+        self.assertTrue(gate())
+        self.assertEqual(controls.steps, 0)  # ...consuming one pending step
+
+    @patch("matplotlib.widgets.Slider")
+    @patch("matplotlib.pyplot")
+    def test_interactive_hud_attached_to_stats_text(self, mock_plt, _mock_slider):
+        captured, _, mock_ax = self._run_interactive(mock_plt)
+        controls = captured["controls"]
+        controls.set_tool("toxin")
+        captured["stats_callback"](0, self.STUB_STATS)
+        (line,), _ = mock_ax.text.return_value.set_text.call_args
+        self.assertIn("gen 0", line)
+        self.assertIn("toxin", line)
+        self.assertIn("sel x1", line)
+
+    @patch("simulate.DEFAULT_SNAPSHOT", "test_snapshot.toml")
+    @patch("matplotlib.widgets.Slider")
+    @patch("matplotlib.pyplot")
+    def test_interactive_snapshot_save(self, mock_plt, _mock_slider):
+        def on_run(kwargs):
+            # as if a 'w' keypress had landed and the model processed it
+            kwargs["controls"].save_requested = True
+            kwargs["stats_callback"](0, self.STUB_STATS)
+
+        self._run_interactive(mock_plt, on_run=on_run)
+        self.assertTrue(os.path.exists("test_snapshot.toml"))
+        with open("test_snapshot.toml", "rb") as fh:
+            parsed = tomllib.load(fh)
+        self.assertEqual(parsed["run"]["pop_size"], 2)
+        self.assertEqual(parsed["traits"]["init_means"], [1.0])  # from stub stats
+
+    @patch("matplotlib.get_backend", return_value="Agg")
+    @patch("matplotlib.pyplot")
+    def test_interactive_refuses_non_interactive_backend(self, mock_plt, _mock_backend):
+        with self.assertRaises(SystemExit) as ctx:
+            self._run_interactive(mock_plt)
+        self.assertIn("interactive", str(ctx.exception))
+
+
+class TestInteractiveBindings(unittest.TestCase):
+    """Direct tests of the live_viz mouse/keyboard handlers."""
+
+    def _bind(self, controls):
+        from live_viz import bind_interactive_controls
+
+        fig = MagicMock()
+        bind_interactive_controls(fig, controls)
+        handlers = {call.args[0]: call.args[1] for call in fig.canvas.mpl_connect.call_args_list}
+        return handlers
+
+    def _controls(self):
+        return Controls(2, default_radius=1.0, default_boost=0.1)
+
+    def test_key_tools_and_dials(self):
+        controls = self._controls()
+        handlers = self._bind(controls)
+        on_key = handlers["key_press_event"]
+        on_key(SimpleNamespace(key="2"))
+        self.assertEqual(controls.tool, "toxin")
+        on_key(SimpleNamespace(key="4"))
+        self.assertEqual(controls.tool, "beacon")
+        on_key(SimpleNamespace(key="x"))
+        self.assertTrue(controls.erase_mode)
+        on_key(SimpleNamespace(key=" "))
+        self.assertTrue(controls.paused)
+        on_key(SimpleNamespace(key="s"))
+        self.assertEqual(controls.steps, 1)
+        on_key(SimpleNamespace(key="n"))
+        self.assertEqual(controls.target_trait, 1)
+        on_key(SimpleNamespace(key="["))
+        self.assertEqual(controls.selection_mult, 0.75)
+        on_key(SimpleNamespace(key="]"))
+        self.assertEqual(controls.selection_mult, 1.0)
+        on_key(SimpleNamespace(key=","))
+        self.assertEqual(controls.mutation_mult, 0.75)
+        on_key(SimpleNamespace(key="."))
+        self.assertEqual(controls.mutation_mult, 1.0)
+        on_key(SimpleNamespace(key="="))
+        self.assertLess(controls.interval_scale, 1.0)
+        on_key(SimpleNamespace(key="-"))
+        self.assertEqual(controls.interval_scale, 1.0)
+        on_key(SimpleNamespace(key="w"))
+        (req,) = controls.pop_requests()
+        self.assertEqual(req, {"op": "save"})
+
+    def test_click_and_drag_radius(self):
+        controls = self._controls()
+        handlers = self._bind(controls)
+        # drag from (1, 2) to (4, 2): radius 3, placed at the press point
+        handlers["button_press_event"](SimpleNamespace(inaxes=True, xdata=1.0, ydata=2.0))
+        handlers["button_release_event"](SimpleNamespace(inaxes=True, xdata=4.0, ydata=2.0))
+        (req,) = controls.pop_requests()
+        self.assertEqual(req["op"], "spawn")
+        self.assertEqual(req["pos"], [1.0, 2.0])
+        self.assertEqual(req["radius"], 3.0)
+        # plain click: configured default radius
+        handlers["button_press_event"](SimpleNamespace(inaxes=True, xdata=5.0, ydata=5.0))
+        handlers["button_release_event"](SimpleNamespace(inaxes=True, xdata=5.0, ydata=5.0))
+        (req,) = controls.pop_requests()
+        self.assertEqual(req["radius"], 1.0)
+        self.assertEqual(req["kind"], "food")
+        self.assertEqual(req["boost"], 0.1)
+
+    def test_click_outside_axes_ignored(self):
+        controls = self._controls()
+        handlers = self._bind(controls)
+        handlers["button_press_event"](SimpleNamespace(inaxes=None, xdata=1.0, ydata=2.0))
+        handlers["button_release_event"](SimpleNamespace(inaxes=True, xdata=4.0, ydata=2.0))
+        self.assertEqual(controls.pop_requests(), [])
+
+    def test_anim_handler_draws_kinds_and_hunter(self):
+        from unittest.mock import patch as _patch
+
+        import numpy as np
+        from matplotlib import cm
+
+        from live_viz import make_anim_handler
+
+        ax = MagicMock()
+        with _patch("matplotlib.pyplot") as _plt:
+            handler, _ = make_anim_handler(ax, _plt, np, cm, 0.0, 10.0, 0.01)
+
+        population = [{"traits": [0.5], "speed": 1.0, "size": 1.0, "pos": [1.0, 1.0]}]
+        elements = [
+            {
+                "pos": [2.0, 2.0],
+                "trait": 0,
+                "radius": 1.0,
+                "boost": 0.1,
+                "lifetime": 5,
+                "kind": "food",
+            },
+            {
+                "pos": [3.0, 3.0],
+                "trait": 0,
+                "radius": 1.0,
+                "boost": 0.1,
+                "lifetime": 5,
+                "kind": "mutagen",
+            },
+            {
+                "pos": [4.0, 4.0],
+                "trait": 0,
+                "radius": 1.0,
+                "boost": 0.1,
+                "lifetime": 5,
+                "kind": "beacon",
+                "traits": [1.0],
+            },
+        ]
+        hunter = {"pos": [6.0, 6.0]}
+        handler(0, population, elements, hunter)
+        drawn = [
+            (call.kwargs.get("marker"), call.kwargs.get("c"))
+            for call in ax.scatter.call_args_list[1:]
+        ]  # skip creature scatter
+        markers = [marker for marker, _ in drawn]
+        self.assertEqual(markers, ["X", "P", "*", "P"])
+        # mutagen/beacon have fixed colors; the hunter is black
+        self.assertEqual(drawn[1][1], "crimson")
+        self.assertEqual(drawn[2][1], "gold")
+        self.assertEqual(drawn[3][1], "k")
+        # food keeps the trait-colored palette (list of 1 RGBA color)
+        self.assertEqual(len(drawn[0][1]), 1)
+
+    def test_anim_handler_legacy_elements_keep_x_markers(self):
+        from unittest.mock import patch as _patch
+
+        import numpy as np
+        from matplotlib import cm
+
+        from live_viz import make_anim_handler
+
+        ax = MagicMock()
+        with _patch("matplotlib.pyplot") as _plt:
+            handler, _ = make_anim_handler(ax, _plt, np, cm, 0.0, 10.0, 0.01)
+
+        population = [{"traits": [0.5], "speed": 1.0, "size": 1.0, "pos": [1.0, 1.0]}]
+        elements = [
+            {"pos": [2.0, 2.0], "trait": 0, "radius": 1.0, "boost": 0.2, "lifetime": 5},
+            {"pos": [3.0, 3.0], "trait": 1, "radius": 1.0, "boost": -0.1, "lifetime": 5},
+        ]
+        handler(0, population, elements)
+        drawn = [
+            (call.kwargs.get("marker"), call.kwargs.get("c"))
+            for call in ax.scatter.call_args_list[1:]
+        ]
+        # legacy (kindless) food+toxin elements group into one trait-colored X
+        self.assertEqual([marker for marker, _ in drawn], ["X"])
+        colors = ax.scatter.call_args_list[1].kwargs["c"]
+        self.assertEqual(len(colors), 2)
 
 
 if __name__ == "__main__":

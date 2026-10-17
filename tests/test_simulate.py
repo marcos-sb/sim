@@ -14,6 +14,7 @@ import numpy as np
 # Import the modules to test
 import model
 import simulate
+from controls import Controls
 
 
 class TestSimulateFunctions(unittest.TestCase):
@@ -1141,6 +1142,298 @@ selection_strength = 0.0
         stats = {"averages": [1.0], "stds": [0.5], "spread": 1.0, "elements": 7}
         text = model._format_stats(2, stats)
         self.assertEqual(text, "gen 2\navg 1.0000\nstd 0.5000\nspread 1.00\n" "elements 7")
+
+
+class TestInteractiveEngine(unittest.TestCase):
+    """Controls/wait-callback/hunter/beacon wiring in simulate_multi."""
+
+    def setUp(self):
+        random.seed(42)
+
+    COMMON_KW = dict(  # noqa: RUF012, C408  (kwargs pool shared by this class)
+        pop_size=20,
+        position_std=0.0,
+        position_min=0.0,
+        position_max=10.0,
+        similarity_scale=0.0,
+        plot_callback=None,
+        anim_callback=None,
+    )
+
+    def _stats_capture(self):
+        calls = []
+
+        def cb(gen, stats):
+            calls.append((gen, stats))
+
+        return cb, calls
+
+    def test_wait_callback_called_each_generation(self):
+        gens = []
+        simulate.simulate_multi(
+            generations=5,
+            num_traits=1,
+            init_means=[1.0],
+            init_stds=[0.0],
+            mutation_stds=[0.0],
+            wait_callback=lambda: gens.append(1),
+            **self.COMMON_KW,
+        )
+        self.assertEqual(len(gens), 5)
+
+    def test_mutation_dial_zero_matches_zero_mutation_config(self):
+        """mutation multiplier 0 must reproduce a mutation-free run (same seed)."""
+        controls = Controls(1)
+        controls.mutation_mult = 0.0
+        random.seed(7)
+        dialed = simulate.simulate_multi(
+            generations=10,
+            num_traits=1,
+            init_means=[2.0],
+            init_stds=[0.5],
+            mutation_stds=[0.3],
+            controls=controls,
+            **self.COMMON_KW,
+        )
+        random.seed(7)
+        frozen = simulate.simulate_multi(
+            generations=10,
+            num_traits=1,
+            init_means=[2.0],
+            init_stds=[0.5],
+            mutation_stds=[0.0],
+            **self.COMMON_KW,
+        )
+        self.assertEqual(dialed, frozen)
+
+    def test_selection_dial_zero_matches_no_selection(self):
+        """strength x0 should reproduce an unselected run exactly (same seed)."""
+        stats_cb, calls_dial = self._stats_capture()
+        controls = Controls(1)
+        controls.selection_mult = 0.0
+        random.seed(11)
+        simulate.simulate_multi(
+            generations=15,
+            num_traits=1,
+            init_means=[0.0],
+            init_stds=[0.5],
+            mutation_stds=[0.1],
+            optimum=[5.0],
+            selection_strength=3.0,
+            stats_callback=stats_cb,
+            controls=controls,
+            **self.COMMON_KW,
+        )
+        stats_cb2, calls_base = self._stats_capture()
+        random.seed(11)
+        simulate.simulate_multi(
+            generations=15,
+            num_traits=1,
+            init_means=[0.0],
+            init_stds=[0.5],
+            mutation_stds=[0.1],
+            optimum=[5.0],
+            selection_strength=0.0,
+            stats_callback=stats_cb2,
+            **self.COMMON_KW,
+        )
+        self.assertEqual(
+            [s["averages"] for _, s in calls_dial],
+            [s["averages"] for _, s in calls_base],
+        )
+
+    def test_spawn_request_lands_in_element_list(self):
+        stats_cb, calls = self._stats_capture()
+        controls = Controls(1, default_radius=2.0)
+        controls.set_tool("food")
+        controls.click((5.0, 5.0))
+        simulate.simulate_multi(
+            generations=2,
+            num_traits=1,
+            init_means=[0.0],
+            init_stds=[0.0],
+            mutation_stds=[0.0],
+            elements=True,
+            element_rate=0.0,
+            element_max=10,
+            controls=controls,
+            stats_callback=stats_cb,
+            **self.COMMON_KW,
+        )
+        counts = [stats["elements"] for _, stats in calls]
+        # the player element spawns at generation 0 (rate 0: no auto spawns)
+        self.assertEqual(counts, [1, 1])
+
+    def test_erase_request_removes_element(self):
+        stats_cb, calls = self._stats_capture()
+        controls = Controls(1, default_radius=2.0)
+        controls.set_tool("toxin")
+        controls.click((5.0, 5.0))
+        controls.toggle_erase()
+        controls.click((5.2, 5.0))  # inside the element's radius
+        simulate.simulate_multi(
+            generations=1,
+            num_traits=1,
+            init_means=[0.0],
+            init_stds=[0.0],
+            mutation_stds=[0.0],
+            elements=True,
+            element_rate=0.0,
+            element_max=10,
+            controls=controls,
+            stats_callback=stats_cb,
+            **self.COMMON_KW,
+        )
+        # spawn and erase stacked in the same request batch: net zero
+        self.assertEqual(calls[0][1]["elements"], 0)
+
+    def test_mutagen_jitters_despite_frozen_mutation(self):
+        """The mutagen tool mutates traits even when the mutation dial is 0."""
+        stats_cb, calls = self._stats_capture()
+        controls = Controls(1, default_radius=100.0, default_boost=0.8)
+        controls.set_tool("mutagen")
+        controls.click((5.0, 5.0))  # covers the whole map
+        controls.mutation_mult = 0.0
+        simulate.simulate_multi(
+            generations=5,
+            num_traits=1,
+            init_means=[1.0],
+            init_stds=[0.0],
+            mutation_stds=[0.0],
+            elements=True,
+            element_rate=0.0,
+            element_max=10,
+            controls=controls,
+            stats_callback=stats_cb,
+            **self.COMMON_KW,
+        )
+        # frozen mutation keeps the mean near 1.0, but the mutagen widens
+        self.assertGreater(calls[-1][1]["stds"][0], 0.1)
+
+    def test_hunter_unit_kills_within_radius(self):
+        victim = {"traits": [1.0], "speed": 1.0, "size": 1.0, "pos": [5.0, 5.1]}
+        far = {"traits": [2.0], "speed": 1.0, "size": 1.0, "pos": [9.0, 9.0]}
+        population = [victim, far]
+        hunter = {"pos": [5.0, 5.0]}
+        killed = model._update_hunter(
+            hunter,
+            population,
+            radius=1.0,
+            speed=0.5,
+            position_std=0.0,
+            position_min=0.0,
+            position_max=10.0,
+            mutation_stds=[0.0],
+            speed_mut=0.0,
+            size_mut=0.0,
+        )
+        self.assertTrue(killed)
+        self.assertEqual(len(population), 2)  # slot refilled, size constant
+        self.assertIsNot(population[0], victim)  # victim was replaced...
+        # ...by a clone of its nearest neighbour (traits 2.0)
+        self.assertAlmostEqual(population[0]["traits"][0], 2.0, places=9)
+        # the hunter closed half the gap to the victim (speed 0.5)
+        self.assertAlmostEqual(hunter["pos"][1], 5.05, places=6)
+
+    def test_hunter_unit_no_kill_outside_radius(self):
+        population = [
+            {"traits": [1.0], "speed": 1.0, "size": 1.0, "pos": [5.0, 5.0]},
+            {"traits": [2.0], "speed": 1.0, "size": 1.0, "pos": [9.0, 9.0]},
+        ]
+        hunter = {"pos": [0.0, 0.0]}
+        killed = model._update_hunter(
+            hunter, population, 0.01, 0.5, 0.0, 0.0, 10.0, [0.0], 0.0, 0.0
+        )
+        self.assertFalse(killed)
+        self.assertEqual(population[0], population[0])
+
+    def test_hunter_enabled_changes_run(self):
+        stats_cb, calls_hunter = self._stats_capture()
+        random.seed(3)
+        simulate.simulate_multi(
+            generations=30,
+            num_traits=1,
+            init_means=[0.0],
+            init_stds=[0.8],
+            mutation_stds=[0.05],
+            hunter_enabled=True,
+            hunter_radius=50.0,  # kills every generation
+            stats_callback=stats_cb,
+            **self.COMMON_KW,
+        )
+        stats_cb2, calls_plain = self._stats_capture()
+        random.seed(3)
+        simulate.simulate_multi(
+            generations=30,
+            num_traits=1,
+            init_means=[0.0],
+            init_stds=[0.8],
+            mutation_stds=[0.05],
+            stats_callback=stats_cb2,
+            **self.COMMON_KW,
+        )
+        self.assertNotEqual(
+            [s["averages"] for _, s in calls_hunter],
+            [s["averages"] for _, s in calls_plain],
+        )
+
+    def test_effective_optimum_beacon_wins(self):
+        optimum = [0.0]
+        beacons = [
+            {"pos": [2.0, 2.0], "radius": 1.0, "traits": [7.0]},
+            {"pos": [5.0, 5.0], "radius": 1.0, "traits": [-4.0]},
+        ]
+        # inside both: nearest wins (overlapping radii)
+        self.assertEqual(model._effective_optimum([2.5, 2.0], optimum, beacons), [7.0])
+        self.assertEqual(model._effective_optimum([5.0, 5.5], optimum, beacons), [-4.0])
+        both = [
+            {"pos": [0.0, 0.0], "radius": 2.0, "traits": [7.0]},
+            {"pos": [3.0, 0.0], "radius": 2.0, "traits": [-4.0]},
+        ]
+        self.assertEqual(model._effective_optimum([1.2, 0.0], optimum, both), [7.0])
+        self.assertEqual(model._effective_optimum([1.9, 0.0], optimum, both), [-4.0])
+        # outside every beacon: global optimum
+        self.assertEqual(model._effective_optimum([9.0, 9.0], optimum, beacons), optimum)
+
+    def test_capture_beacon_traits(self):
+        population = [
+            {"traits": [1.0], "pos": [4.9, 5.0]},
+            {"traits": [3.0], "pos": [5.1, 5.0]},
+            {"traits": [100.0], "pos": [9.9, 9.9]},  # far away
+        ]
+        inside = model._capture_beacon_traits([5.0, 5.0], 1.0, population)
+        self.assertEqual(inside, [2.0])
+        # fallback: nobody nearby captures the population mean
+        faraway = model._capture_beacon_traits([0.0, 0.0], 0.5, population)
+        self.assertEqual(faraway, [(1.0 + 3.0 + 100.0) / 3.0])
+
+    def test_beacon_pulls_local_selection(self):
+        """Selection uses the nearest beacon's captured traits, not the global optimum."""
+        stats_cb, calls = self._stats_capture()
+        controls = Controls(1, default_radius=2.0)
+        controls.set_tool("beacon")
+        random.seed(5)
+        population_pos = [5.0, 5.0]
+        # pre-run placement: the capture seeded from a created-but-empty list
+        # falls back to the population mean (≈2.0); the run then pulls toward 2.0
+        controls.click(population_pos)
+        simulate.simulate_multi(
+            generations=20,
+            num_traits=1,
+            init_means=[2.0],
+            init_stds=[0.3],
+            mutation_stds=[0.05],
+            optimum=[-30.0],  # the global optimum is absurdly unattractive
+            selection_strength=1.0,
+            elements=True,
+            element_rate=0.0,
+            element_max=10,
+            controls=controls,
+            stats_callback=stats_cb,
+            **self.COMMON_KW,
+        )
+        # pulled toward the beacon's captured 2.0, NOT toward the global -30
+        self.assertGreater(calls[-1][1]["averages"][0], 1.0)
 
 
 if __name__ == "__main__":

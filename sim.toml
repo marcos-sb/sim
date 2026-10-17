@@ -47,3 +47,13 @@ boost    = 0.05         # gain at center, linear falloff to edge
 lifetime = 200          # generations an element persists
 max      = 5            # hard cap on simultaneous elements
 
+# Optional roaming predator: each generation it drifts toward the
+# nearest creature and, when one is inside its radius, kills it (the
+# population slot is refilled by a mutated clone of a neighbour).
+# See also the --interactive flag for placing elements by hand.
+# [hunter]
+# enabled = false        # off by default
+# speed   = 0.2          # fraction of the distance to its target per
+#                        # generation (plus the usual positional jitter)
+# radius  = 1.0          # kill radius
+
