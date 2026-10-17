@@ -315,11 +315,9 @@ model.py          # evolution model: reproduction, movement, selection,
 config.py         # sim.toml load/validate (tomllib), starter template
 live_viz.py       # live matplotlib handlers (line chart + 2D animation)
 simulate.py       # config-first thin CLI (argparse, CSV output);
-                  # re-exports model API
+                  # re-exports the model API
 visualize.py      # offline CSV -> matplotlib line chart (--traits, --with-body)
-test_simulate.py  # simulation behavior tests
-test_callbacks.py # callback / CLI wiring tests
-test_config.py    # config validation, CLI precedence, property-hook tests
+tests/            # behavior, callback/wiring, and config tests
 pyproject.toml    # packaging, deps, pytest/ruff/black config
 LICENSE           # MIT
 traits.csv        # example multi-trait output (ignored by git)

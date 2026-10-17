@@ -1,19 +1,20 @@
-import unittest
-import io
-import os
-import sys
 import csv
+import io
 import math
+import os
 import random
+import sys
+import unittest
 from contextlib import redirect_stdout
-from unittest.mock import patch, MagicMock
-import matplotlib
-import matplotlib.pyplot  # ensure @patch('matplotlib.pyplot') can resolve
+from unittest.mock import MagicMock, patch
+
+import matplotlib.pyplot  # noqa: F401  (load-bearing: @patch target needs it)
 import numpy as np
 
-# Import the module to test
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Import the modules to test
+import model
 import simulate
+
 
 class TestSimulateFunctions(unittest.TestCase):
     def setUp(self):
@@ -110,7 +111,7 @@ class TestSimulateFunctions(unittest.TestCase):
                                 selection_strength=0.0,
                                 position_std=0.0, position_min=0.0, position_max=1.0,
                                 plot_callback=None, anim_callback=cb)
-        initial_vals = [set(v[i] for v in seen[0]) for i in range(3)]
+        initial_vals = [{v[i] for v in seen[0]} for i in range(3)]
         self.assertTrue(all(len(s) > 1 for s in initial_vals))
         for gen in seen[1:]:
             for traits in gen:
@@ -467,14 +468,14 @@ selection_strength = 0.0
 
     def test_widen_scale_only_grows(self):
         """The fixed color scale only widens, never shrinks."""
-        self.assertEqual(simulate._widen_scale(None, None, [2.0, 8.0]), (2.0, 8.0))
-        self.assertEqual(simulate._widen_scale(2.0, 8.0, [0.0, 5.0]), (0.0, 8.0))
-        self.assertEqual(simulate._widen_scale(0.0, 8.0, [3.0, 4.0]), (0.0, 8.0))
+        self.assertEqual(model._widen_scale(None, None, [2.0, 8.0]), (2.0, 8.0))
+        self.assertEqual(model._widen_scale(2.0, 8.0, [0.0, 5.0]), (0.0, 8.0))
+        self.assertEqual(model._widen_scale(0.0, 8.0, [3.0, 4.0]), (0.0, 8.0))
 
     def test_color_norm_fixed_scale(self):
         """Normalization against a fixed scale maps identical values to identical colors."""
-        self.assertEqual(simulate._color_norm([1.0, 2.0, 3.0], 1.0, 3.0), [0.0, 0.5, 1.0])
-        self.assertEqual(simulate._color_norm([5.0, 5.0], 5.0, 5.0), [0.0, 0.0])
+        self.assertEqual(model._color_norm([1.0, 2.0, 3.0], 1.0, 3.0), [0.0, 0.5, 1.0])
+        self.assertEqual(model._color_norm([5.0, 5.0], 5.0, 5.0), [0.0, 0.0])
 
     def test_move_toward_similar_traits(self):
         """Similar-trait creatures attract each other; dissimilar ones are left alone."""
@@ -483,7 +484,7 @@ selection_strength = 0.0
             {'trait': 1.0, 'pos': [2.0, 0.0]},
             {'trait': 9.0, 'pos': [9.0, 9.0]},
         ]
-        simulate._move_toward_similar(population, similarity_scale=0.5, move_step=0.5,
+        model._move_toward_similar(population, similarity_scale=0.5, move_step=0.5,
                                       position_std=0.0, position_min=0.0, position_max=10.0)
         # the identical pair meets at its centroid
         self.assertAlmostEqual(population[0]['pos'][0], 1.0)
@@ -501,7 +502,7 @@ selection_strength = 0.0
             {'traits': [0.0, 0.0], 'pos': [2.0, 0.0]},
             {'traits': [5.0, 5.0], 'pos': [5.0, 5.0]},
         ]
-        simulate._move_toward_similar(population, similarity_scale=1.0, move_step=0.5,
+        model._move_toward_similar(population, similarity_scale=1.0, move_step=0.5,
                                       position_std=0.0, position_min=0.0, position_max=10.0)
         self.assertAlmostEqual(population[0]['pos'][0], 1.0)
         self.assertAlmostEqual(population[1]['pos'][0], 1.0)
@@ -513,7 +514,7 @@ selection_strength = 0.0
             {'trait': 1.0, 'pos': [0.0, 0.0]},
             {'trait': 1.0, 'pos': [-5.0, 0.0]},
         ]
-        simulate._move_toward_similar(population, similarity_scale=0.5, move_step=0.5,
+        model._move_toward_similar(population, similarity_scale=0.5, move_step=0.5,
                                       position_std=0.0, position_min=0.0, position_max=10.0)
         self.assertEqual(population[0]['pos'][0], 0.0)
         self.assertEqual(population[1]['pos'][0], 0.0)
@@ -620,7 +621,7 @@ selection_strength = 0.0
             {'trait': 2.0, 'pos': [3.0, 0.0]},
             {'trait': 3.0, 'pos': [0.0, 4.0]},
         ]
-        stats = simulate._population_stats(population)
+        stats = model._population_stats(population)
         self.assertEqual(stats['averages'], [2.0])
         self.assertAlmostEqual(stats['stds'][0], math.sqrt(2.0 / 3.0), places=7)
         # pair distances are 3, 4, and 5
@@ -633,7 +634,7 @@ selection_strength = 0.0
             {'traits': [2.0, 1.0], 'pos': [3.0, 0.0]},
             {'traits': [3.0, 2.0], 'pos': [0.0, 4.0]},
         ]
-        stats = simulate._population_stats(population)
+        stats = model._population_stats(population)
         self.assertEqual(stats['averages'], [2.0, 1.0])
         for std in stats['stds']:
             self.assertAlmostEqual(std, math.sqrt(2.0 / 3.0), places=7)
@@ -641,7 +642,7 @@ selection_strength = 0.0
 
     def test_format_stats(self):
         """_format_stats renders the stats text block."""
-        text = simulate._format_stats(5, {'averages': [1.0], 'stds': [0.5],
+        text = model._format_stats(5, {'averages': [1.0], 'stds': [0.5],
                                           'spread': 1.234})
         self.assertEqual(text, 'gen 5\navg 1.0000\nstd 0.5000\nspread 1.23')
 
@@ -688,7 +689,7 @@ selection_strength = 0.0
         ]
         elements = [{'pos': [5.0, 5.0], 'trait': 0, 'radius': 2.0,
                      'boost': 0.1, 'lifetime': 5}]
-        simulate._update_elements(population, elements, num_traits=1,
+        model._update_elements(population, elements, num_traits=1,
                                     rate=0.0, radius=2.0, boost=0.1,
                                     lifetime=5, position_min=0.0,
                                     position_max=10.0, element_max=50)
@@ -703,7 +704,7 @@ selection_strength = 0.0
         population = []
         elements = [{'pos': [5.0, 5.0], 'trait': 0, 'radius': 1.0,
                      'boost': 0.1, 'lifetime': 1}]
-        simulate._update_elements(population, elements, num_traits=2,
+        model._update_elements(population, elements, num_traits=2,
                                     rate=2.0, radius=1.0, boost=0.1,
                                     lifetime=7, position_min=0.0,
                                     position_max=10.0, element_max=50)
@@ -722,7 +723,7 @@ selection_strength = 0.0
         """The element cap is a hard limit: no spawns while full."""
         elements = [{'pos': [1.0, 1.0], 'trait': 0, 'radius': 1.0,
                      'boost': 0.1, 'lifetime': 10} for _ in range(2)]
-        simulate._update_elements([], elements, num_traits=1, rate=5.0,
+        model._update_elements([], elements, num_traits=1, rate=5.0,
                                     radius=1.0, boost=0.1, lifetime=10,
                                     position_min=0.0, position_max=10.0,
                                     element_max=2)
@@ -734,7 +735,7 @@ selection_strength = 0.0
         """Spawning fills free slots up to the cap."""
         elements = [{'pos': [1.0, 1.0], 'trait': 0, 'radius': 1.0,
                      'boost': 0.1, 'lifetime': 10}]
-        simulate._update_elements([], elements, num_traits=1, rate=5.0,
+        model._update_elements([], elements, num_traits=1, rate=5.0,
                                     radius=1.0, boost=0.1, lifetime=10,
                                     position_min=0.0, position_max=10.0,
                                     element_max=3)
@@ -812,7 +813,7 @@ selection_strength = 0.0
         """_format_stats appends the element count when present."""
         stats = {'averages': [1.0], 'stds': [0.5], 'spread': 1.0,
                  'elements': 7}
-        text = simulate._format_stats(2, stats)
+        text = model._format_stats(2, stats)
         self.assertEqual(text,
                          'gen 2\navg 1.0000\nstd 0.5000\nspread 1.00\n'
                          'elements 7')

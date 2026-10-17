@@ -12,70 +12,26 @@ import argparse
 import random
 import sys
 
-# Try to import numpy for color mapping; will be used only if animation requested
+# numpy is optional at import time; --animate and --seed check for it
 try:
     import numpy as np
 except ImportError:
-    np = None  # will check later if needed
+    np = None
 
 import config as config_mod
 from config import ConfigError, template
 from live_viz import fix_axis_to_position_range, make_anim_handler, make_plot_handler
 from model import (
-    SIZE_MAX,
-    SIZE_MIN,
-    SPEED_MAX,
-    SPEED_MIN,
-    _clamp,
-    _color_norm,
-    _decay_traits,
-    _fire_callbacks,
     _format_stats,
-    _inherit_body,
-    _inherit_ranged,
-    _mean_var,
-    _move_toward_similar,
-    _nearest_neighbour,
-    _offspring_pos,
-    _population_stats,
     _print_trait_summary,
-    _prop_value,
-    _random_body,
-    _random_pos,
-    _trait_columns,
-    _trait_distance,
-    _update_elements,
-    _widen_scale,
     _write_csv,
     simulate,
     simulate_multi,
 )
 
 __all__ = [
-    "SIZE_MAX",
-    "SIZE_MIN",
-    "SPEED_MAX",
-    "SPEED_MIN",
-    "_clamp",
-    "_color_norm",
-    "_decay_traits",
-    "_fire_callbacks",
     "_format_stats",
-    "_inherit_body",
-    "_inherit_ranged",
-    "_mean_var",
-    "_move_toward_similar",
-    "_nearest_neighbour",
-    "_offspring_pos",
-    "_population_stats",
     "_print_trait_summary",
-    "_prop_value",
-    "_random_body",
-    "_random_pos",
-    "_trait_columns",
-    "_trait_distance",
-    "_update_elements",
-    "_widen_scale",
     "_write_csv",
     "main",
     "np",
@@ -224,16 +180,11 @@ def main():
             # otherwise stretch the whole view
             fix_axis_to_position_range(ax, cfg['position_min'],
                                        cfg['position_max'])
-            anim_callback = make_anim_handler(ax, plt, np, cm,
-                                              cfg['position_min'],
-                                              cfg['position_max'],
-                                              args.interval)
-            stats_texts.append(ax.text(0.02, 0.98, '', transform=ax.transAxes,
-                                       va='top', family='monospace', fontsize=9,
-                                       bbox={'boxstyle': 'round',
-                                             'facecolor': 'white',
-                                             'alpha': 0.7,
-                                             'edgecolor': 'none'}))
+            anim_callback, text = make_anim_handler(ax, plt, np, cm,
+                                                    cfg['position_min'],
+                                                    cfg['position_max'],
+                                                    args.interval)
+            stats_texts.append(text)
     else:
         anim_callback = None
     stats_cb = None
@@ -260,17 +211,13 @@ def main():
         # auto-backend sentinel (not a string) when pyplot is mocked
         # in tests, which counts as interactive here.
         if not (isinstance(backend, str)
-                and backend.lower() in non_interactive):
-            if args.plot_block:
-                # no usable window context (agents, scripts, SSH):
-                # honor --generations and exit when reached
-                run_generations = args.generations if args.generations is not None else cfg['generations']
-            else:
-                # a real window exists: run until the user closes it
-                run_generations = None
+                and backend.lower() in non_interactive) and not args.plot_block:
+            # a real window exists and --plot-block was not given: run
+            # until the user closes the window
+            run_generations = None
 
-                def stop_when():
-                    return not plt_module.get_fignums()
+            def stop_when():
+                return not plt_module.get_fignums()
 
     # Record real speed/size history through the stats callback so the
     # CSV carries measured values (simulate_multi returns trait averages only).

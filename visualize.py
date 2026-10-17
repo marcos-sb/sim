@@ -1,5 +1,6 @@
-import csv
 import argparse
+import csv
+
 import matplotlib.pyplot as plt
 
 

@@ -119,7 +119,7 @@ _SCALAR_SECTIONS = {
 
 
 def _check_traits(section_data):
-    """Validate [traits]; returns (num_traits, validated dict).
+    """Validate [traits]; returns the validated dict.
 
     Trait count derives from len(init_means); all other lists must match.
     selection_strength > 0 requires an optimum. Unknown keys are
@@ -147,9 +147,7 @@ def _check_traits(section_data):
         mutation_stds = [one] * num_traits
     else:
         mutation_stds = _check_list(
-            section_data.get('mutation_stds',
-                             [section_data.get('mutation_std', 0.05)]
-                             * num_traits),
+            section_data.get('mutation_stds', [0.05] * num_traits),
             '[traits].mutation_stds', num_traits)
 
     optimum = section_data.get('optimum')
@@ -186,7 +184,7 @@ def _check_traits(section_data):
         'selection_strength': strength,
         'properties': props,
     }
-    return num_traits, validated
+    return validated
 
 
 def load_config(path):
@@ -217,7 +215,7 @@ def load_config(path):
             resolved[key] = value
 
     if 'traits' in raw:
-        _, resolved['traits'] = _check_traits(raw['traits'])
+        resolved['traits'] = _check_traits(raw['traits'])
 
     if resolved['position_max'] <= resolved['position_min']:
         raise ConfigError('[space] position_max must be > position_min')

@@ -27,11 +27,10 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["simulate", "model", "live_viz", "visualize", "config",
-              "test_simulate", "test_callbacks", "test_config"]
+py-modules = ["simulate", "model", "live_viz", "visualize", "config"]
 
 [tool.pytest.ini_options]
-testpaths = ["."]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 
 [tool.ruff]

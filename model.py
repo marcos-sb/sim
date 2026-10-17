@@ -1,6 +1,6 @@
 """Core evolution model: reproduction, movement, selection, elements, stats.
 
-No matplotlib / argparse here. Creamed off `simulate.py` so the model can
+No matplotlib / argparse here. Split out of `simulate.py` so the model can
 be tested and imported without pulling in visualization dependencies.
 """
 
@@ -409,16 +409,9 @@ def _apply_mortality(population, trait_properties, position_std,
         death_p = min(0.5, 1.0 / (abs(v) * 20.0))
         if random.random() < death_p:
             died = True
-            neighbor = _nearest_neighbour(creature, population)
-            if neighbor is None:
-                # alone: clone of self with mutation
-                donor = creature
-                offspring_traits = [t + random.gauss(0.0, m) for t, m in
-                                    zip(donor['traits'], mutation_stds)]
-            else:
-                donor = neighbor
-                offspring_traits = [t + random.gauss(0.0, m) for t, m in
-                                    zip(donor['traits'], mutation_stds)]
+            donor = _nearest_neighbour(creature, population) or creature
+            offspring_traits = [t + random.gauss(0.0, m) for t, m in
+                                zip(donor['traits'], mutation_stds)]
             population[idx] = {
                 'traits': offspring_traits,
                 **_inherit_body(donor, None, speed_mut, size_mut),
@@ -535,10 +528,12 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                              element_lifetime, position_min, position_max,
                              element_max, trait_properties)
         # compute average per trait
+        averages = []
         for i in range(num_traits):
             trait_avg = sum(c['traits'][i] for c in population) / pop_size
             averages_per_trait[i].append(trait_avg)
-        _fire_callbacks(gen, [averages_per_trait[i][gen] for i in range(num_traits)],
+            averages.append(trait_avg)
+        _fire_callbacks(gen, averages,
                         population, element_list if elements else None,
                         stats_callback, plot_callback, anim_callback)
         # Reproduce: each creature interacts with its nearest neighbour

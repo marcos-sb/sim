@@ -18,8 +18,8 @@ def make_plot_handler(ax, plt, interval):
     trait_data = []  # list of lists per trait
     text = ax.text(0.02, 0.98, '', transform=ax.transAxes,
                    va='top', family='monospace', fontsize=9,
-                   bbox=dict(boxstyle='round', facecolor='white',
-                             alpha=0.7, edgecolor='none'))
+                   bbox={'boxstyle': 'round', 'facecolor': 'white',
+                         'alpha': 0.7, 'edgecolor': 'none'})
 
     def plot_callback(gen, averages):
         gen_data.append(gen)
@@ -50,7 +50,7 @@ def make_plot_handler(ax, plt, interval):
 
 
 def make_anim_handler(ax, plt, np, cm, position_min, position_max, interval):
-    """Return anim_callback for `--animate`.
+    """Return (anim_callback, stats_text) for `--animate`.
 
     Colors: single trait via viridis; multi-trait with >=3 traits as RGB,
     else first trait via viridis. Marker area encodes size. Scales only
@@ -65,6 +65,11 @@ def make_anim_handler(ax, plt, np, cm, position_min, position_max, interval):
     rgb_maxs = None
     size_vmin = None
     size_vmax = None
+    # stats text box lives with the handler, symmetrical with the plot one
+    text = ax.text(0.02, 0.98, '', transform=ax.transAxes,
+                   va='top', family='monospace', fontsize=9,
+                   bbox={'boxstyle': 'round', 'facecolor': 'white',
+                         'alpha': 0.7, 'edgecolor': 'none'})
 
     def anim_callback(gen, population, elements=None):
         nonlocal scat, trait_vmin, trait_vmax, rgb_mins, rgb_maxs, elem_scat
@@ -144,7 +149,7 @@ def make_anim_handler(ax, plt, np, cm, position_min, position_max, interval):
                     linewidth=2, color=cm.tab10(e['trait'] % 10), alpha=0.6)))
         plt.pause(interval)
 
-    return anim_callback
+    return anim_callback, text
 
 
 def fix_axis_to_position_range(ax, position_min, position_max):
@@ -156,4 +161,4 @@ def fix_axis_to_position_range(ax, position_min, position_max):
     ax.set_ylim(position_min - pad, position_max + pad)
 
 
-__all__ = ["make_plot_handler", "make_anim_handler", "fix_axis_to_position_range"]
+__all__ = ["fix_axis_to_position_range", "make_anim_handler", "make_plot_handler"]

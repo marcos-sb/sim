@@ -9,7 +9,6 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model
 from config import ConfigError, load_config, template
 
@@ -22,10 +21,6 @@ def _write_cfg(text):
 
 
 class TestConfigValidation(unittest.TestCase):
-    def tearDown(self):
-        # tests track their own temp files via self._paths
-        pass
-
     def test_template_is_valid_and_loadable(self):
         path = _write_cfg(template())
         try:

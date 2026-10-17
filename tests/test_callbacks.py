@@ -1,12 +1,12 @@
-import unittest
 import os
 import sys
-import csv
-import matplotlib.pyplot  # ensure @patch('matplotlib.pyplot') can resolve
-from unittest.mock import patch, MagicMock
+import unittest
+from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import matplotlib.pyplot  # noqa: F401  (load-bearing: @patch target needs it)
+
 import simulate
+
 
 class TestCallbacks(unittest.TestCase):
     def setUp(self):
