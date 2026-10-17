@@ -330,5 +330,66 @@ class TestCallbacks(unittest.TestCase):
         finally:
             simulate.simulate = original_simulate
 
+    @patch('matplotlib.pyplot')
+    def test_main_plot_block_caps_generations(self, mock_plt):
+        """--plot-block with an interactive backend honors --generations
+        instead of running until the (possibly invisible) window closes."""
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_ax.plot.return_value = [MagicMock()]
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        mock_plt.get_fignums.return_value = [1]  # window "always open"
+        calls = []
+        original_simulate = simulate.simulate
+
+        def mock_simulate(*args, **kwargs):
+            calls.append(kwargs)
+            # mimic the real loop: keep going while generations is None
+            gen, limit = 0, kwargs.get('generations')
+            while limit is None or gen < limit:
+                gen += 1
+            return [0.0] * gen
+        simulate.simulate = mock_simulate
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--live-plot', '--plot-block',
+                        '--generations', '3', '--pop-size', '2',
+                        '--output', self.test_output]
+            simulate.main()
+        finally:
+            sys.argv = old_argv
+            simulate.simulate = original_simulate
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['generations'], 3)
+        self.assertIsNone(calls[0]['stop_when'])
+
+    @patch('matplotlib.pyplot')
+    def test_main_plot_block_off_runs_until_window_closes(self, mock_plt):
+        """Without --plot-block the existing behavior is unchanged:
+        generations=None + stop_when polls get_fignums."""
+        mock_fig = MagicMock()
+        mock_ax = MagicMock()
+        mock_ax.plot.return_value = [MagicMock()]
+        mock_plt.subplots.return_value = (mock_fig, mock_ax)
+        mock_plt.get_fignums.side_effect = [[1], [1], [1], []]
+        original_simulate = simulate.simulate
+        captured = {}
+
+        def mock_simulate(*args, **kwargs):
+            captured['generations'] = kwargs.get('generations')
+            captured['stop_when'] = kwargs.get('stop_when')
+            return [0.0]
+        simulate.simulate = mock_simulate
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py', '--live-plot', '--generations', '99',
+                        '--pop-size', '2', '--output', self.test_output]
+            simulate.main()
+        finally:
+            sys.argv = old_argv
+            simulate.simulate = original_simulate
+        self.assertIsNone(captured['generations'])
+        self.assertTrue(callable(captured['stop_when']))
+
 if __name__ == '__main__':
     unittest.main()

@@ -95,6 +95,7 @@ def main():
     parser.add_argument('--element-max', type=int, default=1, help='Maximum simultaneous elements (no new ones spawn while full)')
 
     parser.add_argument('--live-plot', action='store_true', help='Show trait evolution in real time (line chart)')
+    parser.add_argument('--plot-block', action='store_true', help='With --live-plot/--animate: cap the run at --generations instead of running until the plot window closes. Use when no visible window is available (agents, scripts, SSH).')
     parser.add_argument('--animate', action='store_true', help='Show real-time animation of positions colored by traits')
     args = parser.parse_args()
 
@@ -186,11 +187,16 @@ def main():
         # in tests, which counts as interactive here.
         if not (isinstance(backend, str)
                 and backend.lower() in non_interactive):
-            # a real window exists: run until the user closes it
-            run_generations = None
+            if args.plot_block:
+                # no usable window context (agents, scripts, SSH):
+                # honor --generations and exit when reached
+                run_generations = args.generations
+            else:
+                # a real window exists: run until the user closes it
+                run_generations = None
 
-            def stop_when():
-                return not plt_module.get_fignums()
+                def stop_when():
+                    return not plt_module.get_fignums()
     # Arguments shared by both simulation modes.
     common = dict(
         position_std=args.position_std,
