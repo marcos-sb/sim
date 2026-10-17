@@ -1,0 +1,49 @@
+# sim.toml - simulation configuration (TOML)
+# Remaining CLI flags override values here; missing keys use the
+# defaults shown (commented = optional).
+
+[run]
+pop_size = 100        # creatures per generation (>= 1)
+generations = 300     # cap; with --live-plot/--animate and a visible
+                      # window the run ends when the window closes
+# seed = 42           # reproducible run (also a CLI flag)
+# output = "traits.csv"
+
+# One entry per trait; the length of init_means defines the trait count.
+# A single value = single-trait mode.
+[traits]
+init_means    = [0.0, 1.0, 2.0]     # starting population mean per trait
+init_stds     = [0.1, 0.1, 0.1]     # starting spread per trait
+mutation_stds = [0.05, 0.05, 0.05]  # per-trait mutation rate
+# mutation_std = 0.05               # shorthand: same rate for all traits
+# optimum = [0.0, 1.0, 2.0]         # selection target; required when
+                                    # selection_strength > 0
+selection_strength = 0.0            # 0.0 = pure drift
+# Per-trait behavior: what each trait *does* to the creature.
+# Valid: none, move_speed, steer, repel, survival_decay,
+#        element_resist, repro_boost, life_expect, cluster_bias
+properties = ["move_speed", "steer", "repel"]
+
+[body]                  # evolvable body attributes (not traits)
+speed_mean = 1.0        # movement multiplier
+speed_std  = 0.2
+# speed_mutation = 0.05 # defaults to mutation rate of trait 0
+size_mean = 1.0         # marker size / personal space
+size_std  = 0.2
+# size_mutation = 0.05  # defaults to mutation rate of trait 0
+
+[space]
+position_std     = 0.05 # positional jitter per generation
+position_min     = 0.0
+position_max     = 10.0
+similarity_scale = 0.5  # similar-trait attract radius (pop std devs)
+move_step        = 0.1  # fraction of distance moved per generation
+
+[elements]
+enabled  = true         # map elements boost nearby creatures' traits
+rate     = 1.0          # expected new elements per generation
+radius   = 1.0          # effect radius
+boost    = 0.05         # gain at center, linear falloff to edge
+lifetime = 200          # generations an element persists
+max      = 5            # hard cap on simultaneous elements
+
