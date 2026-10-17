@@ -27,17 +27,17 @@ def _mean_var(values):
 
 def _trait_columns(population):
     """Per-trait value columns; works for single- and multi-trait populations."""
-    if 'trait' in population[0]:
-        return [[c['trait'] for c in population]]
-    num_traits = len(population[0]['traits'])
-    return [[c['traits'][k] for c in population] for k in range(num_traits)]
+    if "trait" in population[0]:
+        return [[c["trait"] for c in population]]
+    num_traits = len(population[0]["traits"])
+    return [[c["traits"][k] for c in population] for k in range(num_traits)]
 
 
 def _trait_vector(creature):
     """The creature's trait values as a tuple, legacy or multi shape."""
-    if 'trait' in creature:
-        return (creature['trait'],)
-    return tuple(creature['traits'])
+    if "trait" in creature:
+        return (creature["trait"],)
+    return tuple(creature["traits"])
 
 
 def _random_pos(position_min, position_max):
@@ -47,8 +47,7 @@ def _random_pos(position_min, position_max):
 
 def _random_body(speed_mean=1.0, speed_std=0.2, size_mean=1.0, size_std=0.2):
     """Speed/size for a newborn creature."""
-    return {'speed': random.gauss(speed_mean, speed_std),
-            'size': random.gauss(size_mean, size_std)}
+    return {"speed": random.gauss(speed_mean, speed_std), "size": random.gauss(size_mean, size_std)}
 
 
 def _inherit_ranged(own, partner_value, mutation_std, lo, hi):
@@ -59,28 +58,33 @@ def _inherit_ranged(own, partner_value, mutation_std, lo, hi):
 
 def _inherit_body(creature, partner, speed_mut, size_mut):
     """Offspring speed/size: inherit from one parent, mutate, clamp."""
-    partner_speed = partner.get('speed', 1.0) if partner is not None else None
-    partner_size = partner.get('size', 1.0) if partner is not None else None
+    partner_speed = partner.get("speed", 1.0) if partner is not None else None
+    partner_size = partner.get("size", 1.0) if partner is not None else None
     return {
-        'speed': _inherit_ranged(creature.get('speed', 1.0), partner_speed,
-                                 speed_mut, SPEED_MIN, SPEED_MAX),
-        'size': _inherit_ranged(creature.get('size', 1.0), partner_size,
-                                size_mut, SIZE_MIN, SIZE_MAX),
+        "speed": _inherit_ranged(
+            creature.get("speed", 1.0), partner_speed, speed_mut, SPEED_MIN, SPEED_MAX
+        ),
+        "size": _inherit_ranged(
+            creature.get("size", 1.0), partner_size, size_mut, SIZE_MIN, SIZE_MAX
+        ),
     }
 
 
 def _offspring_pos(creature, partner, position_std, position_min, position_max):
     """Offspring position: midpoint of the parents (clone if alone), mutated, clamped."""
     if partner is None:
-        raw = [p + random.gauss(0.0, position_std) for p in creature['pos']]
+        raw = [p + random.gauss(0.0, position_std) for p in creature["pos"]]
     else:
-        raw = [(a + b) / 2.0 + random.gauss(0.0, position_std)
-               for a, b in zip(creature['pos'], partner['pos'])]
+        raw = [
+            (a + b) / 2.0 + random.gauss(0.0, position_std)
+            for a, b in zip(creature["pos"], partner["pos"])
+        ]
     return [_clamp(p, position_min, position_max) for p in raw]
 
 
-def _fire_callbacks(gen, averages, population, elements,
-                    stats_callback, plot_callback, anim_callback):
+def _fire_callbacks(
+    gen, averages, population, elements, stats_callback, plot_callback, anim_callback
+):
     """Dispatch the per-generation stats/plot/animation callbacks.
 
     elements is the active element list, or None when disabled: stats then
@@ -89,7 +93,7 @@ def _fire_callbacks(gen, averages, population, elements,
     if stats_callback:
         stats = _population_stats(population)
         if elements is not None:
-            stats['elements'] = len(elements)
+            stats["elements"] = len(elements)
         stats_callback(gen, stats)
     if plot_callback:
         plot_callback(gen, averages)
@@ -112,7 +116,7 @@ def _nearest_neighbour(creature, population):
     for other in population:
         if other is creature:
             continue
-        d = math.dist(creature['pos'], other['pos'])
+        d = math.dist(creature["pos"], other["pos"])
         if best_dist is None or d < best_dist:
             best_dist = d
             best = other
@@ -134,7 +138,7 @@ def _nearest_neighbours(population):
     neighbors = [None] * n
     if n < 2:
         return neighbors
-    positions = [c['pos'] for c in population]
+    positions = [c["pos"] for c in population]
     lo_x = min(p[0] for p in positions)
     hi_x = max(p[0] for p in positions)
     lo_y = min(p[1] for p in positions)
@@ -143,13 +147,15 @@ def _nearest_neighbours(population):
     if span <= 0.0:
         # everything stacked on one point: creature 1 is creature 0's
         # neighbour, and creature 0 is everybody else's
-        return ([population[1]] + [population[0]] * (n - 1))
+        return [population[1]] + [population[0]] * (n - 1)
     cols = max(1, math.isqrt(n))
     cell = span / cols + 1e-9  # padding keeps division-by-cell safe
 
     def cell_of(x, y):
-        return (max(0, min(int((x - lo_x) / cell), cols - 1)),
-                max(0, min(int((y - lo_y) / cell), cols - 1)))
+        return (
+            max(0, min(int((x - lo_x) / cell), cols - 1)),
+            max(0, min(int((y - lo_y) / cell), cols - 1)),
+        )
 
     grid = {}
     for i, p in enumerate(positions):
@@ -201,12 +207,19 @@ def _prop_value(creature, trait_properties, name):
         return None
     for i, prop in enumerate(trait_properties):
         if prop == name:
-            return float(creature['traits'][i])
+            return float(creature["traits"][i])
     return None
 
 
-def _move_toward_similar(population, similarity_scale, move_step, position_std,
-                         position_min, position_max, trait_properties=None):
+def _move_toward_similar(
+    population,
+    similarity_scale,
+    move_step,
+    position_std,
+    position_min,
+    position_max,
+    trait_properties=None,
+):
     """Move each creature toward the centroid of creatures with similar traits.
 
     The similarity scale is relative to the population's trait diversity:
@@ -258,23 +271,19 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
     # keeps the larger of the two creatures' demands.
     repel_radii = []
     for creature in population:
-        v_repel = _prop_value(creature, trait_properties, 'repel')
-        repel_radii.append(repel_radius if v_repel is None
-                           else repel_radius * max(v_repel, 0.0))
+        v_repel = _prop_value(creature, trait_properties, "repel")
+        repel_radii.append(repel_radius if v_repel is None else repel_radius * max(v_repel, 0.0))
     # Precompute per-creature arrays once: the inner pair loop then works
     # on local lists and C-speed math.dist instead of dict lookups.
     n = len(population)
-    positions = [c['pos'] for c in population]
+    positions = [c["pos"] for c in population]
     trait_vectors = [_trait_vector(c) for c in population]
-    speeds = [c.get('speed', 1.0) for c in population]
-    sizes = [c.get('size', 1.0) for c in population]
+    speeds = [c.get("speed", 1.0) for c in population]
+    sizes = [c.get("size", 1.0) for c in population]
     if trait_properties:
-        move_speeds = [_prop_value(c, trait_properties, 'move_speed')
-                       for c in population]
-        steers = [_prop_value(c, trait_properties, 'steer')
-                  for c in population]
-        clusters = [_prop_value(c, trait_properties, 'cluster_bias')
-                    for c in population]
+        move_speeds = [_prop_value(c, trait_properties, "move_speed") for c in population]
+        steers = [_prop_value(c, trait_properties, "steer") for c in population]
+        clusters = [_prop_value(c, trait_properties, "cluster_bias") for c in population]
     else:
         move_speeds = steers = clusters = [None] * n
     displacements = []
@@ -289,8 +298,7 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
         v_steer = steers[i]
         # attraction gain from cluster_bias
         v_cluster = clusters[i]
-        cluster_gain = (min(abs(v_cluster), 1.0)
-                        if v_cluster is not None else 1.0)
+        cluster_gain = min(abs(v_cluster), 1.0) if v_cluster is not None else 1.0
         if similarity_scale > 0.0:
             weight_sum = 0.0
             centroid_x = 0.0
@@ -320,10 +328,8 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
                 centroid_y += weight * positions[j][1]
             if weight_sum > 0.0:
                 attraction = min(1.0, weight_sum)
-                dx = move_step * attraction * cluster_gain * (
-                    centroid_x / weight_sum - px)
-                dy = move_step * attraction * cluster_gain * (
-                    centroid_y / weight_sum - py)
+                dx = move_step * attraction * cluster_gain * (centroid_x / weight_sum - px)
+                dy = move_step * attraction * cluster_gain * (centroid_y / weight_sum - py)
             # cap the total repulsion at one move_step
             repel_mag = math.hypot(rx, ry)
             if repel_mag > 1.0:
@@ -350,10 +356,10 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
         displacements.append((dx, dy))
     for creature, (dx, dy) in zip(population, displacements):
         # random movement
-        creature['pos'][0] += dx + random.gauss(0.0, position_std)
-        creature['pos'][1] += dy + random.gauss(0.0, position_std)
-        creature['pos'][0] = _clamp(creature['pos'][0], position_min, position_max)
-        creature['pos'][1] = _clamp(creature['pos'][1], position_min, position_max)
+        creature["pos"][0] += dx + random.gauss(0.0, position_std)
+        creature["pos"][1] += dy + random.gauss(0.0, position_std)
+        creature["pos"][0] = _clamp(creature["pos"][0], position_min, position_max)
+        creature["pos"][1] = _clamp(creature["pos"][1], position_min, position_max)
 
 
 def _widen_scale(vmin, vmax, values):
@@ -382,40 +388,55 @@ def _population_stats(population):
         averages.append(mean)
         stds.append(math.sqrt(var))
     # speed and size stats
-    speed_mean, speed_var = _mean_var([c.get('speed', 1.0) for c in population])
-    size_mean, size_var = _mean_var([c.get('size', 1.0) for c in population])
+    speed_mean, speed_var = _mean_var([c.get("speed", 1.0) for c in population])
+    size_mean, size_var = _mean_var([c.get("size", 1.0) for c in population])
     spread = 0.0
     count = 0
     for i in range(len(population)):
         for j in range(i + 1, len(population)):
-            spread += math.dist(population[i]['pos'], population[j]['pos'])
+            spread += math.dist(population[i]["pos"], population[j]["pos"])
             count += 1
     if count > 0:
         spread /= count
-    return {'averages': averages, 'stds': stds,
-            'speed_avg': speed_mean, 'speed_std': math.sqrt(speed_var),
-            'size_avg': size_mean, 'size_std': math.sqrt(size_var),
-            'spread': spread}
+    return {
+        "averages": averages,
+        "stds": stds,
+        "speed_avg": speed_mean,
+        "speed_std": math.sqrt(speed_var),
+        "size_avg": size_mean,
+        "size_std": math.sqrt(size_var),
+        "spread": spread,
+    }
 
 
 def _format_stats(gen, stats):
     """One text block for the plot window: generation, per-trait
     averages and stds, and the mean pairwise distance."""
-    avg = ', '.join(f'{v:.4f}' for v in stats['averages'])
-    std = ', '.join(f'{v:.4f}' for v in stats['stds'])
+    avg = ", ".join(f"{v:.4f}" for v in stats["averages"])
+    std = ", ".join(f"{v:.4f}" for v in stats["stds"])
     text = f'gen {gen}\navg {avg}\nstd {std}\nspread {stats["spread"]:.2f}'
-    if 'elements' in stats:
+    if "elements" in stats:
         text += f'\nelements {stats["elements"]}'
-    if 'speed_avg' in stats:
+    if "speed_avg" in stats:
         text += f'\nspeed {stats["speed_avg"]:.4f}±{stats["speed_std"]:.4f}'
-    if 'size_avg' in stats:
+    if "size_avg" in stats:
         text += f'\nsize {stats["size_avg"]:.4f}±{stats["size_std"]:.4f}'
     return text
 
 
-def _update_elements(population, elements, num_traits, rate, radius,
-                     boost, lifetime, position_min, position_max,
-                     element_max, trait_properties=None):
+def _update_elements(
+    population,
+    elements,
+    num_traits,
+    rate,
+    radius,
+    boost,
+    lifetime,
+    position_min,
+    position_max,
+    element_max,
+    trait_properties=None,
+):
     """Age map elements, spawn new ones, and boost creatures near them.
 
     Each element raises the trait it targets for creatures within its
@@ -429,8 +450,8 @@ def _update_elements(population, elements, num_traits, rate, radius,
     (1 - clamp(|v|, 0, 1)): v=0 feels the full boost, v=1 is immune.
     """
     for element in elements:
-        element['lifetime'] -= 1
-    elements[:] = [e for e in elements if e['lifetime'] > 0]
+        element["lifetime"] -= 1
+    elements[:] = [e for e in elements if e["lifetime"] > 0]
     # spawn: expected `rate` new elements per generation
     n = int(rate)
     if random.random() < rate - n:
@@ -438,29 +459,30 @@ def _update_elements(population, elements, num_traits, rate, radius,
     for _ in range(n):
         if len(elements) >= element_max:
             break  # at capacity: wait for an element to expire
-        elements.append({
-            'pos': [random.uniform(position_min, position_max)
-                    for _ in range(2)],
-            'trait': random.randrange(num_traits),
-            'radius': radius,
-            'boost': boost,
-            'lifetime': lifetime,
-        })
+        elements.append(
+            {
+                "pos": [random.uniform(position_min, position_max) for _ in range(2)],
+                "trait": random.randrange(num_traits),
+                "radius": radius,
+                "boost": boost,
+                "lifetime": lifetime,
+            }
+        )
     # apply boosts with linear falloff inside the radius
     for creature in population:
-        v_resist = _prop_value(creature, trait_properties, 'element_resist')
+        v_resist = _prop_value(creature, trait_properties, "element_resist")
         for element in elements:
-            d = math.dist(creature['pos'], element['pos'])
-            if d < element['radius']:
-                amount = element['boost'] * (1.0 - d / element['radius'])
+            d = math.dist(creature["pos"], element["pos"])
+            if d < element["radius"]:
+                amount = element["boost"] * (1.0 - d / element["radius"])
                 if v_resist is not None:
                     amount *= 1.0 - min(abs(v_resist), 1.0)
                 if amount == 0.0:
                     continue
-                if 'trait' in creature:
-                    creature['trait'] += amount
+                if "trait" in creature:
+                    creature["trait"] += amount
                 else:
-                    creature['traits'][element['trait']] += amount
+                    creature["traits"][element["trait"]] += amount
 
 
 def _decay_traits(population, trait_properties):
@@ -473,20 +495,26 @@ def _decay_traits(population, trait_properties):
     """
     if not trait_properties:
         return
-    decay_idx = [i for i, p in enumerate(trait_properties)
-                 if p == 'survival_decay']
+    decay_idx = [i for i, p in enumerate(trait_properties) if p == "survival_decay"]
     if not decay_idx:
         return
     for creature in population:
         for i in decay_idx:
-            v = creature['traits'][i]
+            v = creature["traits"][i]
             decay = min(0.5, abs(v) * 0.1)
-            creature['traits'][i] = v * (1.0 - decay)
+            creature["traits"][i] = v * (1.0 - decay)
 
 
-def _apply_mortality(population, trait_properties, position_std,
-                     position_min, position_max, mutation_stds,
-                     speed_mut, size_mut):
+def _apply_mortality(
+    population,
+    trait_properties,
+    position_std,
+    position_min,
+    position_max,
+    mutation_stds,
+    speed_mut,
+    size_mut,
+):
     """life_expect mortality: probability of dying each generation.
 
     Death probability = clamp(1 / (|v| * 20), 0, 0.5), so v=1 means a
@@ -497,36 +525,55 @@ def _apply_mortality(population, trait_properties, position_std,
     """
     if not trait_properties:
         return False
-    life_idx = [i for i, p in enumerate(trait_properties)
-                if p == 'life_expect']
+    life_idx = [i for i, p in enumerate(trait_properties) if p == "life_expect"]
     if not life_idx:
         return False
     died = False
     for idx, creature in enumerate(population):
-        v = creature['traits'][life_idx[0]]
+        v = creature["traits"][life_idx[0]]
         death_p = min(0.5, 1.0 / (abs(v) * 20.0))
         if random.random() < death_p:
             died = True
             donor = _nearest_neighbour(creature, population) or creature
-            offspring_traits = [t + random.gauss(0.0, m) for t, m in
-                                zip(donor['traits'], mutation_stds)]
+            offspring_traits = [
+                t + random.gauss(0.0, m) for t, m in zip(donor["traits"], mutation_stds)
+            ]
             population[idx] = {
-                'traits': offspring_traits,
+                "traits": offspring_traits,
                 **_inherit_body(donor, None, speed_mut, size_mut),
-                'pos': _offspring_pos(donor, None, position_std,
-                                      position_min, position_max),
+                "pos": _offspring_pos(donor, None, position_std, position_min, position_max),
             }
     return died
 
 
-def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0, initial_std=0.1,
-             position_std=0.05, position_min=0.0, position_max=10.0,
-             similarity_scale=0.5, move_step=0.1,
-             plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
-             elements=False, element_rate=1.0, element_radius=1.0,
-             element_boost=0.05, element_lifetime=200, element_max=1,
-             speed_mean=1.0, speed_std=0.2, speed_mut=None,
-             size_mean=1.0, size_std=0.2, size_mut=None):
+def simulate(
+    pop_size=100,
+    generations=100,
+    mutation_std=0.05,
+    initial_mean=1.0,
+    initial_std=0.1,
+    position_std=0.05,
+    position_min=0.0,
+    position_max=10.0,
+    similarity_scale=0.5,
+    move_step=0.1,
+    plot_callback=None,
+    anim_callback=None,
+    stop_when=None,
+    stats_callback=None,
+    elements=False,
+    element_rate=1.0,
+    element_radius=1.0,
+    element_boost=0.05,
+    element_lifetime=200,
+    element_max=1,
+    speed_mean=1.0,
+    speed_std=0.2,
+    speed_mut=None,
+    size_mean=1.0,
+    size_std=0.2,
+    size_mut=None,
+):
     """Single-trait simulation (legacy API), backed by simulate_multi.
 
     Same signature, same return value (list of per-generation trait
@@ -539,48 +586,87 @@ def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0,
     """
     flat_anim = None
     if anim_callback is not None:
+
         def flat_anim(gen, population, elements=None):
-            flat = [{'trait': c['traits'][0],
-                     'speed': c['speed'], 'size': c['size'],
-                     'pos': c['pos']} for c in population]
+            flat = [
+                {"trait": c["traits"][0], "speed": c["speed"], "size": c["size"], "pos": c["pos"]}
+                for c in population
+            ]
             if elements is None:
                 anim_callback(gen, flat)
             else:
                 anim_callback(gen, flat, elements)
+
     per_trait = simulate_multi(
-        pop_size=pop_size, generations=generations, num_traits=1,
-        init_means=[initial_mean], init_stds=[initial_std],
+        pop_size=pop_size,
+        generations=generations,
+        num_traits=1,
+        init_means=[initial_mean],
+        init_stds=[initial_std],
         mutation_stds=[mutation_std],
-        position_std=position_std, position_min=position_min,
-        position_max=position_max, similarity_scale=similarity_scale,
+        position_std=position_std,
+        position_min=position_min,
+        position_max=position_max,
+        similarity_scale=similarity_scale,
         move_step=move_step,
-        plot_callback=plot_callback, anim_callback=flat_anim,
-        stop_when=stop_when, stats_callback=stats_callback,
-        elements=elements, element_rate=element_rate,
-        element_radius=element_radius, element_boost=element_boost,
-        element_lifetime=element_lifetime, element_max=element_max,
-        speed_mean=speed_mean, speed_std=speed_std, speed_mut=speed_mut,
-        size_mean=size_mean, size_std=size_std, size_mut=size_mut,
+        plot_callback=plot_callback,
+        anim_callback=flat_anim,
+        stop_when=stop_when,
+        stats_callback=stats_callback,
+        elements=elements,
+        element_rate=element_rate,
+        element_radius=element_radius,
+        element_boost=element_boost,
+        element_lifetime=element_lifetime,
+        element_max=element_max,
+        speed_mean=speed_mean,
+        speed_std=speed_std,
+        speed_mut=speed_mut,
+        size_mean=size_mean,
+        size_std=size_std,
+        size_mut=size_mut,
     )
     return per_trait[0]
 
 
-def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None, init_stds=None,
-                   mutation_stds=None, optimum=None, selection_strength=0.0,
-                   position_std=0.05, position_min=0.0, position_max=10.0,
-                   similarity_scale=0.5, move_step=0.1,
-                   plot_callback=None, anim_callback=None, stop_when=None, stats_callback=None,
-                   elements=False, element_rate=1.0, element_radius=1.0,
-                   element_boost=0.05, element_lifetime=200, element_max=1,
-                   speed_mean=1.0, speed_std=0.2, speed_mut=None,
-                   size_mean=1.0, size_std=0.2, size_mut=None,
-                   trait_properties=None):
+def simulate_multi(
+    pop_size=100,
+    generations=100,
+    num_traits=2,
+    init_means=None,
+    init_stds=None,
+    mutation_stds=None,
+    optimum=None,
+    selection_strength=0.0,
+    position_std=0.05,
+    position_min=0.0,
+    position_max=10.0,
+    similarity_scale=0.5,
+    move_step=0.1,
+    plot_callback=None,
+    anim_callback=None,
+    stop_when=None,
+    stats_callback=None,
+    elements=False,
+    element_rate=1.0,
+    element_radius=1.0,
+    element_boost=0.05,
+    element_lifetime=200,
+    element_max=1,
+    speed_mean=1.0,
+    speed_std=0.2,
+    speed_mut=None,
+    size_mean=1.0,
+    size_std=0.2,
+    size_mut=None,
+    trait_properties=None,
+):
     if generations is None and stop_when is None:
-        raise ValueError('stop_when is required when generations is None')
+        raise ValueError("stop_when is required when generations is None")
     if pop_size < 1:
-        raise ValueError('pop_size must be at least 1')
+        raise ValueError("pop_size must be at least 1")
     if selection_strength > 0.0 and optimum is None:
-        raise ValueError('optimum is required when selection_strength > 0')
+        raise ValueError("optimum is required when selection_strength > 0")
     if speed_mut is None:
         speed_mut = mutation_stds[0]
     if size_mut is None:
@@ -588,11 +674,13 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
     # Initialize population: list of creatures, each creature is dict with traits list and pos
     population = []
     for _ in range(pop_size):
-        population.append({
-            'traits': [random.gauss(init_means[i], init_stds[i]) for i in range(num_traits)],
-            **_random_body(speed_mean, speed_std, size_mean, size_std),
-            'pos': _random_pos(position_min, position_max),
-        })
+        population.append(
+            {
+                "traits": [random.gauss(init_means[i], init_stds[i]) for i in range(num_traits)],
+                **_random_body(speed_mean, speed_std, size_mean, size_std),
+                "pos": _random_pos(position_min, position_max),
+            }
+        )
     # We'll track averages per trait per generation
     averages_per_trait = [[] for _ in range(num_traits)]
     element_list = []  # active map elements
@@ -601,62 +689,79 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
         if stop_when is not None and stop_when():
             break
         if elements:
-            _update_elements(population, element_list, num_traits,
-                             element_rate, element_radius, element_boost,
-                             element_lifetime, position_min, position_max,
-                             element_max, trait_properties)
+            _update_elements(
+                population,
+                element_list,
+                num_traits,
+                element_rate,
+                element_radius,
+                element_boost,
+                element_lifetime,
+                position_min,
+                position_max,
+                element_max,
+                trait_properties,
+            )
         # compute average per trait
         averages = []
         for i in range(num_traits):
-            trait_avg = sum(c['traits'][i] for c in population) / pop_size
+            trait_avg = sum(c["traits"][i] for c in population) / pop_size
             averages_per_trait[i].append(trait_avg)
             averages.append(trait_avg)
-        _fire_callbacks(gen, averages,
-                        population, element_list if elements else None,
-                        stats_callback, plot_callback, anim_callback)
+        _fire_callbacks(
+            gen,
+            averages,
+            population,
+            element_list if elements else None,
+            stats_callback,
+            plot_callback,
+            anim_callback,
+        )
         # Reproduce: each creature interacts with its nearest neighbour
         # (distance-based interaction); each trait is inherited from one of
         # the two parents (repro_boost biases the choice toward the parent
         # whose value of that trait is larger in magnitude), and the
         # offspring is placed between the parents
-        repro_idx = [i for i, p in enumerate(trait_properties or [])
-                     if p == 'repro_boost']
+        repro_idx = [i for i, p in enumerate(trait_properties or []) if p == "repro_boost"]
         neighbors = _nearest_neighbours(population)
         offspring_pop = []
         for creature, partner in zip(population, neighbors):
             if partner is None:
                 # alone: clone with mutation
-                offspring_traits = [creature['traits'][i] + random.gauss(0.0, mutation_stds[i]) for i in range(num_traits)]
+                offspring_traits = [
+                    creature["traits"][i] + random.gauss(0.0, mutation_stds[i])
+                    for i in range(num_traits)
+                ]
             else:
                 # interaction: each trait from one parent, then mutate
                 offspring_traits = []
                 for i in range(num_traits):
-                    own_v = creature['traits'][i]
-                    partner_v = partner['traits'][i]
+                    own_v = creature["traits"][i]
+                    partner_v = partner["traits"][i]
                     if i in repro_idx:
                         # weighted choice: larger magnitude = fitter parent
                         w_own, w_partner = abs(own_v), abs(partner_v)
                         total = w_own + w_partner
                         p_own = w_own / total if total > 0.0 else 0.5
-                        parent_value = (own_v if random.random() < p_own
-                                        else partner_v)
+                        parent_value = own_v if random.random() < p_own else partner_v
                     else:
                         parent_value = random.choice((own_v, partner_v))
-                    offspring_traits.append(parent_value
-                                            + random.gauss(0.0,
-                                                           mutation_stds[i]))
-            offspring_pop.append({
-                'traits': offspring_traits,
-                **_inherit_body(creature, partner, speed_mut, size_mut),
-                'pos': _offspring_pos(creature, partner, position_std,
-                                      position_min, position_max),
-            })
+                    offspring_traits.append(parent_value + random.gauss(0.0, mutation_stds[i]))
+            offspring_pop.append(
+                {
+                    "traits": offspring_traits,
+                    **_inherit_body(creature, partner, speed_mut, size_mut),
+                    "pos": _offspring_pos(
+                        creature, partner, position_std, position_min, position_max
+                    ),
+                }
+            )
         # Apply selection if needed
         if selection_strength > 0.0:
             # compute fitness for each offspring
             fitnesses = []
             for ind in offspring_pop:
-                sq_dist = sum((ind['traits'][i] - optimum[i])**2 for i in range(num_traits))
+                sq_dist = sum((ind["traits"][i] - optimum[i]) ** 2 for i in range(num_traits))
                 fitness = math.exp(-selection_strength * sq_dist)
                 fitnesses.append(fitness)
             # Weighted random sampling to choose next generation.
@@ -666,27 +771,42 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                 weights = [1.0] * pop_size
             else:
                 weights = fitnesses
-            population = [dict(ind, traits=list(ind['traits']), pos=list(ind['pos']))
-                          for ind in random.choices(offspring_pop, weights=weights, k=pop_size)]
+            population = [
+                dict(ind, traits=list(ind["traits"]), pos=list(ind["pos"]))
+                for ind in random.choices(offspring_pop, weights=weights, k=pop_size)
+            ]
         else:
             population = offspring_pop
         # Property hooks running after selection, before movement:
         # upkeep decay, then mortality (dead slots take the neighbor's line)
         _decay_traits(population, trait_properties)
-        _apply_mortality(population, trait_properties, position_std,
-                         position_min, position_max, mutation_stds,
-                         speed_mut, size_mut)
+        _apply_mortality(
+            population,
+            trait_properties,
+            position_std,
+            position_min,
+            position_max,
+            mutation_stds,
+            speed_mut,
+            size_mut,
+        )
         # Move creatures toward others with similar traits
-        _move_toward_similar(population, similarity_scale, move_step,
-                             position_std, position_min, position_max,
-                             trait_properties)
+        _move_toward_similar(
+            population,
+            similarity_scale,
+            move_step,
+            position_std,
+            position_min,
+            position_max,
+            trait_properties,
+        )
         gen += 1
     return averages_per_trait
 
 
 def _write_csv(path, header, rows):
     """Write a header plus rows to path as CSV."""
-    with open(path, 'w', newline='') as f:
+    with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(rows)
@@ -694,12 +814,12 @@ def _write_csv(path, header, rows):
 
 def _print_trait_summary(averages_per_trait):
     """Print initial/final averages and drift for each trait series."""
-    print('Initial averages per trait:')
+    print("Initial averages per trait:")
     for i, series in enumerate(averages_per_trait):
-        print(f'  Trait {i}: {series[0]:.4f}')
-    print('Final averages per trait:')
+        print(f"  Trait {i}: {series[0]:.4f}")
+    print("Final averages per trait:")
     for i, series in enumerate(averages_per_trait):
-        print(f'  Trait {i}: {series[-1]:.4f}')
-    print('Differences per trait:')
+        print(f"  Trait {i}: {series[-1]:.4f}")
+    print("Differences per trait:")
     for i, series in enumerate(averages_per_trait):
-        print(f'  Trait {i}: {abs(series[-1] - series[0]):.4f}')
+        print(f"  Trait {i}: {abs(series[-1] - series[0]):.4f}")
