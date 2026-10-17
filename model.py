@@ -114,8 +114,22 @@ def _nearest_neighbour(creature, population):
     return best
 
 
+def _prop_value(creature, trait_properties, name):
+    """First trait value whose property is `name`, else None.
+
+    trait_properties is a per-trait-index list of property names
+    (e.g. ['move_speed', 'steer']); None disables all hooks.
+    """
+    if not trait_properties:
+        return None
+    for i, prop in enumerate(trait_properties):
+        if prop == name:
+            return float(creature['traits'][i])
+    return None
+
+
 def _move_toward_similar(population, similarity_scale, move_step, position_std,
-                         position_min, position_max):
+                         position_min, position_max, trait_properties=None):
     """Move each creature toward the centroid of creatures with similar traits.
 
     The similarity scale is relative to the population's trait diversity:
@@ -134,6 +148,16 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
 
     Each creature's speed scales its displacement; its size scales its
     personal-space repulsion contribution.
+
+    Optional trait-property hooks (trait_properties maps trait index to
+    a property name; a trait whose property is set drives behavior):
+      move_speed     extra displacement multiplier max(v, 0)
+      steer          extra move_step * v toward the similar centroid
+                     (v < 0 flees it); no anchor = no steering
+      repel          personal-space radius multiplier max(v, 0)
+                     so v=1 doubles the baseline spacing demand
+      cluster_bias   scales the attraction contribution by
+                     clamp(|v|, 0, 1)
     """
     # Similarity radius in trait units, scaled to the population's
     # trait diversity so the layout stays balanced whatever the
@@ -153,27 +177,41 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
     repel_radius = 0.0
     if similarity_scale > 0.0 and position_max > position_min:
         repel_radius = (position_max - position_min) / math.sqrt(len(population))
-    displacements = []
+    # Per-creature personal-space radius (property-scaled); each pair
+    # keeps the larger of the two creatures' demands.
+    repel_radii = []
     for creature in population:
+        v_repel = _prop_value(creature, trait_properties, 'repel')
+        repel_radii.append(repel_radius if v_repel is None
+                           else repel_radius * max(v_repel, 0.0))
+    displacements = []
+    for i, creature in enumerate(population):
         dx = 0.0
         dy = 0.0
         rx = 0.0
         ry = 0.0
         speed = creature.get('speed', 1.0)
         size = creature.get('size', 1.0)
+        v_speed = _prop_value(creature, trait_properties, 'move_speed')
+        v_steer = _prop_value(creature, trait_properties, 'steer')
+        v_cluster = _prop_value(creature, trait_properties, 'cluster_bias')
+        # attraction gain from cluster_bias
+        cluster_gain = (min(abs(v_cluster), 1.0)
+                        if v_cluster is not None else 1.0)
         if similarity_scale > 0.0:
             weight_sum = 0.0
             centroid_x = 0.0
             centroid_y = 0.0
-            for other in population:
-                if other is creature:
+            for j, other in enumerate(population):
+                if j == i:
                     continue
                 d = _trait_distance(creature, other)
                 if d > cutoff:
                     # dissimilar: keep personal space instead of attracting
                     d_pos = math.dist(creature['pos'], other['pos'])
-                    if 0.0 < d_pos < repel_radius:
-                        f = (repel_radius - d_pos) / repel_radius
+                    pair_radius = max(repel_radii[i], repel_radii[j])
+                    if 0.0 < d_pos < pair_radius:
+                        f = (pair_radius - d_pos) / pair_radius
                         # size scales personal space repulsion
                         rx += f * (creature['pos'][0] - other['pos'][0]) / d_pos * size
                         ry += f * (creature['pos'][1] - other['pos'][1]) / d_pos * size
@@ -184,8 +222,10 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
                 centroid_y += weight * other['pos'][1]
             if weight_sum > 0.0:
                 attraction = min(1.0, weight_sum)
-                dx = move_step * attraction * (centroid_x / weight_sum - creature['pos'][0])
-                dy = move_step * attraction * (centroid_y / weight_sum - creature['pos'][1])
+                dx = move_step * attraction * cluster_gain * (
+                    centroid_x / weight_sum - creature['pos'][0])
+                dy = move_step * attraction * cluster_gain * (
+                    centroid_y / weight_sum - creature['pos'][1])
             # cap the total repulsion at one move_step
             repel_mag = math.hypot(rx, ry)
             if repel_mag > 1.0:
@@ -193,9 +233,22 @@ def _move_toward_similar(population, similarity_scale, move_step, position_std,
                 ry /= repel_mag
             dx += move_step * rx
             dy += move_step * ry
+            # steer: extra directed step toward (v > 0) or away (v < 0)
+            # from the weighted centroid of similar creatures
+            if v_steer is not None and weight_sum > 0.0:
+                to_cx = centroid_x / weight_sum - creature['pos'][0]
+                to_cy = centroid_y / weight_sum - creature['pos'][1]
+                norm = math.hypot(to_cx, to_cy)
+                if norm > 1e-12:
+                    dx += move_step * v_steer * to_cx / norm
+                    dy += move_step * v_steer * to_cy / norm
         # scale displacement by creature's speed
         dx *= speed
         dy *= speed
+        # scale by the move_speed property (if present)
+        if v_speed is not None:
+            dx *= max(v_speed, 0.0)
+            dy *= max(v_speed, 0.0)
         displacements.append((dx, dy))
     for creature, (dx, dy) in zip(population, displacements):
         # random movement
@@ -264,7 +317,7 @@ def _format_stats(gen, stats):
 
 def _update_elements(population, elements, num_traits, rate, radius,
                      boost, lifetime, position_min, position_max,
-                     element_max):
+                     element_max, trait_properties=None):
     """Age map elements, spawn new ones, and boost creatures near them.
 
     Each element raises the trait it targets for creatures within its
@@ -273,6 +326,9 @@ def _update_elements(population, elements, num_traits, rate, radius,
     generations. The cap is a hard limit: while `element_max`
     elements exist, no new ones spawn, so elements are never
     evicted early.
+
+    Creatures carrying the element_resist property scale the boost by
+    (1 - clamp(|v|, 0, 1)): v=0 feels the full boost, v=1 is immune.
     """
     for element in elements:
         element['lifetime'] -= 1
@@ -294,14 +350,82 @@ def _update_elements(population, elements, num_traits, rate, radius,
         })
     # apply boosts with linear falloff inside the radius
     for creature in population:
+        v_resist = _prop_value(creature, trait_properties, 'element_resist')
         for element in elements:
             d = math.dist(creature['pos'], element['pos'])
             if d < element['radius']:
                 amount = element['boost'] * (1.0 - d / element['radius'])
+                if v_resist is not None:
+                    amount *= 1.0 - min(abs(v_resist), 1.0)
+                if amount == 0.0:
+                    continue
                 if 'trait' in creature:
                     creature['trait'] += amount
                 else:
                     creature['traits'][element['trait']] += amount
+
+
+def _decay_traits(population, trait_properties):
+    """survival_decay upkeep: each assigned trait shrinks every generation.
+
+    Decay rate is proportional to the trait's own magnitude
+    (rate = min(0.5, |v| * 0.1)), so large values are costlier to
+    maintain: value *= (1 - rate). Self-referential by design — a
+    runaway decay trait prices itself out.
+    """
+    if not trait_properties:
+        return
+    decay_idx = [i for i, p in enumerate(trait_properties)
+                 if p == 'survival_decay']
+    if not decay_idx:
+        return
+    for creature in population:
+        for i in decay_idx:
+            v = creature['traits'][i]
+            decay = min(0.5, abs(v) * 0.1)
+            creature['traits'][i] = v * (1.0 - decay)
+
+
+def _apply_mortality(population, trait_properties, position_std,
+                     position_min, position_max, mutation_stds,
+                     speed_mut, size_mut):
+    """life_expect mortality: probability of dying each generation.
+
+    Death probability = clamp(1 / (|v| * 20), 0, 0.5), so v=1 means a
+    5% chance per generation, larger values live longer, and the floor
+    caps the death rate. A dead creature is replaced (population size
+    constant) by a mutated clone of its nearest neighbour, so dying
+    hands your slot to the neighborhood's winning lineage.
+    """
+    if not trait_properties:
+        return False
+    life_idx = [i for i, p in enumerate(trait_properties)
+                if p == 'life_expect']
+    if not life_idx:
+        return False
+    died = False
+    for idx, creature in enumerate(population):
+        v = creature['traits'][life_idx[0]]
+        death_p = min(0.5, 1.0 / (abs(v) * 20.0))
+        if random.random() < death_p:
+            died = True
+            neighbor = _nearest_neighbour(creature, population)
+            if neighbor is None:
+                # alone: clone of self with mutation
+                donor = creature
+                offspring_traits = [t + random.gauss(0.0, m) for t, m in
+                                    zip(donor['traits'], mutation_stds)]
+            else:
+                donor = neighbor
+                offspring_traits = [t + random.gauss(0.0, m) for t, m in
+                                    zip(donor['traits'], mutation_stds)]
+            population[idx] = {
+                'traits': offspring_traits,
+                **_inherit_body(donor, None, speed_mut, size_mut),
+                'pos': _offspring_pos(donor, None, position_std,
+                                      position_min, position_max),
+            }
+    return died
 
 
 def simulate(pop_size=100, generations=100, mutation_std=0.05, initial_mean=1.0, initial_std=0.1,
@@ -378,7 +502,8 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                    elements=False, element_rate=1.0, element_radius=1.0,
                    element_boost=0.05, element_lifetime=200, element_max=1,
                    speed_mean=1.0, speed_std=0.2, speed_mut=None,
-                   size_mean=1.0, size_std=0.2, size_mut=None):
+                   size_mean=1.0, size_std=0.2, size_mut=None,
+                   trait_properties=None):
     if generations is None and stop_when is None:
         raise ValueError('stop_when is required when generations is None')
     if pop_size < 1:
@@ -408,7 +533,7 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
             _update_elements(population, element_list, num_traits,
                              element_rate, element_radius, element_boost,
                              element_lifetime, position_min, position_max,
-                             element_max)
+                             element_max, trait_properties)
         # compute average per trait
         for i in range(num_traits):
             trait_avg = sum(c['traits'][i] for c in population) / pop_size
@@ -418,7 +543,11 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                         stats_callback, plot_callback, anim_callback)
         # Reproduce: each creature interacts with its nearest neighbour
         # (distance-based interaction); each trait is inherited from one of
-        # the two parents, and the offspring is placed between the parents
+        # the two parents (repro_boost biases the choice toward the parent
+        # whose value of that trait is larger in magnitude), and the
+        # offspring is placed between the parents
+        repro_idx = [i for i, p in enumerate(trait_properties or [])
+                     if p == 'repro_boost']
         offspring_pop = []
         for creature in population:
             partner = _nearest_neighbour(creature, population)
@@ -427,8 +556,22 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                 offspring_traits = [creature['traits'][i] + random.gauss(0.0, mutation_stds[i]) for i in range(num_traits)]
             else:
                 # interaction: each trait from one parent, then mutate
-                offspring_traits = [random.choice((creature['traits'][i], partner['traits'][i]))
-                                    + random.gauss(0.0, mutation_stds[i]) for i in range(num_traits)]
+                offspring_traits = []
+                for i in range(num_traits):
+                    own_v = creature['traits'][i]
+                    partner_v = partner['traits'][i]
+                    if i in repro_idx:
+                        # weighted choice: larger magnitude = fitter parent
+                        w_own, w_partner = abs(own_v), abs(partner_v)
+                        total = w_own + w_partner
+                        p_own = w_own / total if total > 0.0 else 0.5
+                        parent_value = (own_v if random.random() < p_own
+                                        else partner_v)
+                    else:
+                        parent_value = random.choice((own_v, partner_v))
+                    offspring_traits.append(parent_value
+                                            + random.gauss(0.0,
+                                                           mutation_stds[i]))
             offspring_pop.append({
                 'traits': offspring_traits,
                 **_inherit_body(creature, partner, speed_mut, size_mut),
@@ -454,9 +597,16 @@ def simulate_multi(pop_size=100, generations=100, num_traits=2, init_means=None,
                           for ind in random.choices(offspring_pop, weights=weights, k=pop_size)]
         else:
             population = offspring_pop
+        # Property hooks running after selection, before movement:
+        # upkeep decay, then mortality (dead slots take the neighbor's line)
+        _decay_traits(population, trait_properties)
+        _apply_mortality(population, trait_properties, position_std,
+                         position_min, position_max, mutation_stds,
+                         speed_mut, size_mut)
         # Move creatures toward others with similar traits
         _move_toward_similar(population, similarity_scale, move_step,
-                             position_std, position_min, position_max)
+                             position_std, position_min, position_max,
+                             trait_properties)
         gen += 1
     return averages_per_trait
 

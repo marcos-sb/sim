@@ -11,10 +11,18 @@ import simulate
 class TestCallbacks(unittest.TestCase):
     def setUp(self):
         self.test_output = 'test_output.csv'
+        # minimal config for main()-level tests
+        self.test_cfg = 'test_callbacks.toml'
+        with open(self.test_cfg, 'w') as f:
+            f.write('[run]\ngenerations = 1\n'
+                    '[traits]\ninit_means = [1.0]\ninit_stds = [0.1]\n'
+                    'mutation_stds = [0.1]\n')
 
     def tearDown(self):
         if os.path.exists(self.test_output):
             os.remove(self.test_output)
+        if os.path.exists(self.test_cfg):
+            os.remove(self.test_cfg)
 
     def test_simulate_invokes_plot_callback(self):
         """Test that simulate calls plot_callback each generation."""
@@ -97,19 +105,19 @@ class TestCallbacks(unittest.TestCase):
         mock_ax = MagicMock()
         mock_ax.plot.return_value = [MagicMock()]  # unpackable for `line, = ax.plot(...)`
         mock_plt.subplots.return_value = (mock_fig, mock_ax)
-        original_simulate = simulate.simulate
+        original_multi = simulate.simulate_multi
         captured = {}
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             captured['plot_callback'] = kwargs.get('plot_callback')
-            # Call original to avoid side effects
-            return original_simulate(*args, **kwargs)
-        # Patch simulate.simulate
-        simulate.simulate = mock_simulate
+            return [[1.0]]
+        # Patch simulate.simulate_multi
+        simulate.simulate_multi = mock_multi
         try:
             old_argv = sys.argv.copy()
             try:
-                sys.argv = ['simulate.py', '--live-plot', '--generations', '1',
-                            '--pop-size', '2', '--output', self.test_output]
+                sys.argv = ['simulate.py', '--config', self.test_cfg,
+                            '--live-plot', '--pop-size', '2',
+                            '--output', self.test_output]
                 # window "closes" after 1 generation
                 mock_plt.get_fignums.side_effect = [[1], []]
                 simulate.main()
@@ -119,23 +127,24 @@ class TestCallbacks(unittest.TestCase):
             # Ensure it's callable
             self.assertTrue(callable(captured['plot_callback']))
         finally:
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
 
     @patch('matplotlib.pyplot')
     def test_main_animate_sets_callback(self, mock_plt):
         """Test that --animate results in a non-None anim_callback being passed."""
         mock_plt.subplots.return_value = (MagicMock(), MagicMock())
-        original_simulate = simulate.simulate
+        original_multi = simulate.simulate_multi
         captured = {}
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             captured['anim_callback'] = kwargs.get('anim_callback')
-            return original_simulate(*args, **kwargs)
-        simulate.simulate = mock_simulate
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
         try:
             old_argv = sys.argv.copy()
             try:
-                sys.argv = ['simulate.py', '--animate', '--generations', '1',
-                            '--pop-size', '2', '--output', self.test_output]
+                sys.argv = ['simulate.py', '--config', self.test_cfg,
+                            '--animate', '--pop-size', '2',
+                            '--output', self.test_output]
                 # window "closes" after 1 generation
                 mock_plt.get_fignums.side_effect = [[1], []]
                 simulate.main()
@@ -144,24 +153,25 @@ class TestCallbacks(unittest.TestCase):
             self.assertIsNotNone(captured.get('anim_callback'))
             self.assertTrue(callable(captured['anim_callback']))
         finally:
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
 
     @patch('matplotlib.pyplot')
     def test_main_animate_sets_stats_text(self, mock_plt):
         """Test that --animate adds a stats text box updated per generation."""
         mock_ax = MagicMock()
         mock_plt.subplots.return_value = (MagicMock(), mock_ax)
-        original_simulate = simulate.simulate
+        original_multi = simulate.simulate_multi
         captured = {}
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             captured['stats_callback'] = kwargs.get('stats_callback')
-            return original_simulate(*args, **kwargs)
-        simulate.simulate = mock_simulate
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
         try:
             old_argv = sys.argv.copy()
             try:
-                sys.argv = ['simulate.py', '--animate', '--generations', '1',
-                            '--pop-size', '2', '--output', self.test_output]
+                sys.argv = ['simulate.py', '--config', self.test_cfg,
+                            '--animate', '--pop-size', '2',
+                            '--output', self.test_output]
                 # window "closes" after 1 generation
                 mock_plt.get_fignums.side_effect = [[1], []]
                 simulate.main()
@@ -174,11 +184,14 @@ class TestCallbacks(unittest.TestCase):
             # captured callback with known stats to check formatting
             mock_ax.text.return_value.set_text.reset_mock()
             captured['stats_callback'](0, {'averages': [1.0], 'stds': [0.0],
-                                           'spread': 1.0})
+                                           'spread': 1.0,
+                                           'speed_avg': 1.0, 'speed_std': 0.0,
+                                           'size_avg': 1.0, 'size_std': 0.0})
             mock_ax.text.return_value.set_text.assert_called_once_with(
-                'gen 0\navg 1.0000\nstd 0.0000\nspread 1.00')
+                'gen 0\navg 1.0000\nstd 0.0000\nspread 1.00'
+                '\nspeed 1.0000±0.0000\nsize 1.0000±0.0000')
         finally:
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
 
     @patch('matplotlib.pyplot')
     def test_main_both_flags_set_both_callbacks(self, mock_plt):
@@ -187,18 +200,19 @@ class TestCallbacks(unittest.TestCase):
         mock_ax = MagicMock()
         mock_ax.plot.return_value = [MagicMock()]  # unpackable for `line, = ax.plot(...)`
         mock_plt.subplots.return_value = (mock_fig, mock_ax)
-        original_simulate = simulate.simulate
+        original_multi = simulate.simulate_multi
         captured = {'plot': None, 'anim': None}
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             captured['plot'] = kwargs.get('plot_callback')
             captured['anim'] = kwargs.get('anim_callback')
-            return original_simulate(*args, **kwargs)
-        simulate.simulate = mock_simulate
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
         try:
             old_argv = sys.argv.copy()
             try:
-                sys.argv = ['simulate.py', '--live-plot', '--animate',
-                            '--generations', '1', '--pop-size', '2',
+                sys.argv = ['simulate.py', '--config', self.test_cfg,
+                            '--live-plot', '--animate',
+                            '--pop-size', '2',
                             '--output', self.test_output]
                 # window "closes" after 1 generation
                 mock_plt.get_fignums.side_effect = [[1], []]
@@ -210,57 +224,57 @@ class TestCallbacks(unittest.TestCase):
             self.assertTrue(callable(captured['plot']))
             self.assertTrue(callable(captured['anim']))
         finally:
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
 
-    def test_main_without_flags_sets_no_callbacks(self):
+    @patch('matplotlib.pyplot')
+    def test_main_without_flags_sets_no_callbacks(self, mock_plt):
         """Test that without flags, callbacks are None."""
-        original_simulate = simulate.simulate
+        mock_plt.subplots.return_value = (MagicMock(), MagicMock())
+        original_multi = simulate.simulate_multi
         captured = {'plot': None, 'anim': None, 'stats': None,
                     'elements': None}
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             captured['plot'] = kwargs.get('plot_callback')
             captured['anim'] = kwargs.get('anim_callback')
             captured['stats'] = kwargs.get('stats_callback')
             captured['elements'] = kwargs.get('elements')
-            return original_simulate(*args, **kwargs)
-        simulate.simulate = mock_simulate
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
         try:
             old_argv = sys.argv.copy()
             try:
-                sys.argv = ['simulate.py', '--generations', '1',
+                sys.argv = ['simulate.py', '--config', self.test_cfg,
                             '--pop-size', '2', '--output', self.test_output]
                 simulate.main()
             finally:
                 sys.argv = old_argv
             self.assertIsNone(captured['plot'])
             self.assertIsNone(captured['anim'])
-            self.assertIsNone(captured['stats'])
-            self.assertFalse(captured['elements'])
+            # stats_callback is always provided now: it records the
+            # speed/size history for the CSV even without any plot
         finally:
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
 
-    @patch('matplotlib.pyplot')
-    def test_main_elements_pass_config(self, mock_plt):
-        """Test that --elements forwards the element configuration."""
-        mock_plt.subplots.return_value = (MagicMock(), MagicMock())
-        original_simulate = simulate.simulate
+    def test_main_elements_enabled(self):
+        """--elements is forwarded to the simulation."""
+        original_multi = simulate.simulate_multi
         captured = {}
-        def mock_simulate(*args, **kwargs):
-            captured.update({k: v for k, v in kwargs.items()
-                             if k == 'elements' or k.startswith('element')})
-            return original_simulate(*args, **kwargs)
-        simulate.simulate = mock_simulate
+        def mock_multi(*args, **kwargs):
+            for k in ('elements', 'element_rate', 'element_radius',
+                      'element_boost', 'element_lifetime', 'element_max'):
+                captured[k] = kwargs.get(k)
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
         try:
             old_argv = sys.argv.copy()
             try:
-                sys.argv = ['simulate.py', '--animate', '--elements',
+                sys.argv = ['simulate.py', '--config', self.test_cfg,
+                            '--elements',
                             '--element-rate', '2', '--element-radius', '1.5',
                             '--element-boost', '-0.1',
                             '--element-lifetime', '7', '--element-max', '9',
-                            '--generations', '1', '--pop-size', '2',
+                            '--pop-size', '2',
                             '--output', self.test_output]
-                # window "closes" after 1 generation
-                mock_plt.get_fignums.side_effect = [[1], []]
                 simulate.main()
             finally:
                 sys.argv = old_argv
@@ -271,28 +285,60 @@ class TestCallbacks(unittest.TestCase):
             self.assertEqual(captured['element_lifetime'], 7)
             self.assertEqual(captured['element_max'], 9)
         finally:
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
+
+    def test_main_elements_defaults_from_config(self):
+        """Without --elements, the config's [elements] section is honored."""
+        cfg = 'test_callbacks_elements.toml'
+        with open(cfg, 'w') as f:
+            f.write('[run]\ngenerations = 1\n'
+                    '[traits]\ninit_means = [1.0]\ninit_stds = [0.1]\n'
+                    'mutation_stds = [0.1]\n'
+                    '[elements]\nenabled = true\nrate = 3.0\nmax = 4\n')
+        original_multi = simulate.simulate_multi
+        captured = {}
+        def mock_multi(*args, **kwargs):
+            for k in ('elements', 'element_rate', 'element_max'):
+                captured[k] = kwargs.get(k)
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
+        try:
+            old_argv = sys.argv.copy()
+            try:
+                sys.argv = ['simulate.py', '--config', cfg,
+                            '--pop-size', '2', '--output', self.test_output]
+                simulate.main()
+            finally:
+                sys.argv = old_argv
+            self.assertIs(captured['elements'], True)
+            self.assertEqual(captured['element_rate'], 3.0)
+            self.assertEqual(captured['element_max'], 4)
+        finally:
+            simulate.simulate_multi = original_multi
+            if os.path.exists(cfg):
+                os.remove(cfg)
 
     @patch('matplotlib.pyplot')
     def test_main_animate_renders_elements(self, mock_plt):
         """Test that --animate --elements draws markers and circles."""
         mock_ax = MagicMock()
         mock_plt.subplots.return_value = (MagicMock(), mock_ax)
-        original_simulate = simulate.simulate
+        original_multi = simulate.simulate_multi
         captured = {}
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             # do not run the real simulation: keep the anim_callback
             # closure fresh (scat/elem_scat still None) so the
             # first-frame drawing path is exercised below
             captured['anim_callback'] = kwargs.get('anim_callback')
-            return [1.0]
-        simulate.simulate = mock_simulate
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
         try:
             old_argv = sys.argv.copy()
             try:
-                sys.argv = ['simulate.py', '--animate', '--elements',
+                sys.argv = ['simulate.py', '--config', self.test_cfg,
+                            '--animate', '--elements',
                             '--element-rate', '3', '--element-boost', '0.2',
-                            '--generations', '1', '--pop-size', '2',
+                            '--pop-size', '2',
                             '--output', self.test_output]
                 mock_plt.get_fignums.side_effect = [[1], []]
                 simulate.main()
@@ -328,7 +374,7 @@ class TestCallbacks(unittest.TestCase):
             self.assertEqual(mock_ax.scatter.call_count, 2)
             self.assertEqual(mock_ax.add_patch.call_count, 4)
         finally:
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
 
     @patch('matplotlib.pyplot')
     def test_main_plot_block_caps_generations(self, mock_plt):
@@ -339,29 +385,33 @@ class TestCallbacks(unittest.TestCase):
         mock_ax.plot.return_value = [MagicMock()]
         mock_plt.subplots.return_value = (mock_fig, mock_ax)
         mock_plt.get_fignums.return_value = [1]  # window "always open"
+        original_multi = simulate.simulate_multi
         calls = []
-        original_simulate = simulate.simulate
+        simulated_generations = []
 
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             calls.append(kwargs)
             # mimic the real loop: keep going while generations is None
             gen, limit = 0, kwargs.get('generations')
             while limit is None or gen < limit:
                 gen += 1
-            return [0.0] * gen
-        simulate.simulate = mock_simulate
+            simulated_generations.append(gen)
+            return [[1.0] * gen]
+        simulate.simulate_multi = mock_multi
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--live-plot', '--plot-block',
+            sys.argv = ['simulate.py', '--config', self.test_cfg,
+                        '--live-plot', '--plot-block',
                         '--generations', '3', '--pop-size', '2',
                         '--output', self.test_output]
             simulate.main()
         finally:
             sys.argv = old_argv
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]['generations'], 3)
         self.assertIsNone(calls[0]['stop_when'])
+        self.assertEqual(simulated_generations, [3])
 
     @patch('matplotlib.pyplot')
     def test_main_plot_block_off_runs_until_window_closes(self, mock_plt):
@@ -372,22 +422,24 @@ class TestCallbacks(unittest.TestCase):
         mock_ax.plot.return_value = [MagicMock()]
         mock_plt.subplots.return_value = (mock_fig, mock_ax)
         mock_plt.get_fignums.side_effect = [[1], [1], [1], []]
-        original_simulate = simulate.simulate
+        original_multi = simulate.simulate_multi
         captured = {}
 
-        def mock_simulate(*args, **kwargs):
+        def mock_multi(*args, **kwargs):
             captured['generations'] = kwargs.get('generations')
             captured['stop_when'] = kwargs.get('stop_when')
-            return [0.0]
-        simulate.simulate = mock_simulate
+            return [[1.0]]
+        simulate.simulate_multi = mock_multi
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--live-plot', '--generations', '99',
+            mock_plt.get_fignums.side_effect = [[1], [1], [1], []]
+            sys.argv = ['simulate.py', '--config', self.test_cfg,
+                        '--live-plot', '--generations', '99',
                         '--pop-size', '2', '--output', self.test_output]
             simulate.main()
         finally:
             sys.argv = old_argv
-            simulate.simulate = original_simulate
+            simulate.simulate_multi = original_multi
         self.assertIsNone(captured['generations'])
         self.assertTrue(callable(captured['stop_when']))
 

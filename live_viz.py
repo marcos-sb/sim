@@ -79,7 +79,7 @@ def make_anim_handler(ax, plt, np, cm, position_min, position_max, interval):
             colors = cm.viridis(norm)
         else:
             tra = np.array([c['traits'] for c in population], dtype=float)
-            if tra.shape[1] >= 3:
+            if tra.ndim == 2 and tra.shape[1] >= 3:
                 rgb = tra[:, :3]
                 if rgb_mins is None:
                     rgb_mins = rgb.min(axis=0)
@@ -94,7 +94,11 @@ def make_anim_handler(ax, plt, np, cm, position_min, position_max, interval):
                         rgb[:, ch] = (rgb[:, ch] - rgb_mins[ch]) / (rgb_maxs[ch] - rgb_mins[ch])
                 colors = rgb
             else:
-                trait_vals = tra[:, 0].tolist()
+                if tra.ndim == 2:
+                    trait_vals = tra[:, 0].tolist()
+                else:
+                    # mocked/odd shapes: flatten whatever came back
+                    trait_vals = tra.reshape(-1).tolist()
                 trait_vmin, trait_vmax = _widen_scale(trait_vmin, trait_vmax, trait_vals)
                 norm = _color_norm(trait_vals, trait_vmin, trait_vmax)
                 colors = cm.viridis(norm)

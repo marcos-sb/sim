@@ -1,9 +1,11 @@
 import unittest
+import io
 import os
 import sys
 import csv
 import math
 import random
+from contextlib import redirect_stdout
 from unittest.mock import patch, MagicMock
 import matplotlib
 import matplotlib.pyplot  # ensure @patch('matplotlib.pyplot') can resolve
@@ -19,6 +21,18 @@ class TestSimulateFunctions(unittest.TestCase):
         self.seed = 42
         np.random.seed(self.seed)
         random.seed(self.seed)
+
+    def _write_min_cfg(self, path='test_min.toml', generations=2,
+                       num_traits=1):
+        """A minimal valid config for main()-level tests."""
+        lists = ', '.join(['0.1'] * num_traits)
+        with open(path, 'w') as f:
+            f.write(f'[run]\ngenerations = {generations}\n'
+                    '[traits]\n'
+                    f'init_means = [{", ".join(["1.0"] * num_traits)}]\n'
+                    f'init_stds = [{lists}]\n'
+                    f'mutation_stds = [{lists}]\n')
+        return path
 
     def test_simulate_single_trait_length(self):
         """Test that simulate returns correct number of generations."""
@@ -118,36 +132,41 @@ class TestSimulateFunctions(unittest.TestCase):
             self.assertEqual(pos, mid)
 
     def test_main_backward_compatibility_creates_csv(self):
-        """Test that main() with default args creates a CSV with correct format."""
+        """Test that main() with a single-trait config creates a CSV with correct format."""
         test_file = 'test_back_compat.csv'
-        # Remove if exists
+        test_cfg = 'test_back_compat.toml'
         if os.path.exists(test_file):
             os.remove(test_file)
+        with open(test_cfg, 'w') as f:
+            f.write('[run]\ngenerations = 5\n[traits]\ninit_means = [1.0]\n')
         # Backup sys.argv
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--generations', '5', '--pop-size', '8',
-                        '--output', test_file]
+            sys.argv = ['simulate.py', '--config', test_cfg,
+                        '--pop-size', '8', '--output', test_file]
             simulate.main()
             # Check file exists
             self.assertTrue(os.path.exists(test_file))
             # Read CSV
             with open(test_file, 'r') as f:
                 reader = list(csv.reader(f))
-            # Header
-            self.assertEqual(reader[0], ['generation', 'average_trait'])
+            # Header: unified format now includes speed/size columns
+            self.assertEqual(reader[0],
+                             ['generation', 'trait0_avg', 'speed_avg',
+                              'size_avg'])
             # Number of rows = generations + 1 (header)
             self.assertEqual(len(reader), 6)  # 5 generations + header
-            # All rows after header should have 2 columns
+            # All rows after header should have 4 columns
             for row in reader[1:]:
-                self.assertEqual(len(row), 2)
+                self.assertEqual(len(row), 4)
                 # Ensure they are numeric
                 float(row[0])  # generation
-                float(row[1])  # average
+                float(row[1])  # trait average
         finally:
             sys.argv = old_argv
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            for path in (test_file, test_cfg):
+                if os.path.exists(path):
+                    os.remove(path)
 
     def test_single_creature_does_not_crash(self):
         """A lone creature (no partner) reproduces by cloning in both modes."""
@@ -208,11 +227,14 @@ class TestSimulateFunctions(unittest.TestCase):
         for f in files:
             if os.path.exists(f):
                 os.remove(f)
+        test_cfg = 'test_seed.toml'
+        with open(test_cfg, 'w') as f:
+            f.write('[run]\ngenerations = 3\n[traits]\ninit_means = [1.0]\n')
         old_argv = sys.argv.copy()
         try:
             for f in files:
-                sys.argv = ['simulate.py', '--seed', '7',
-                            '--generations', '3', '--pop-size', '6',
+                sys.argv = ['simulate.py', '--config', test_cfg,
+                            '--seed', '7', '--pop-size', '6',
                             '--output', f]
                 simulate.main()
             with open(files[0], 'rb') as fa, open(files[1], 'rb') as fb:
@@ -222,23 +244,33 @@ class TestSimulateFunctions(unittest.TestCase):
             for f in files:
                 if os.path.exists(f):
                     os.remove(f)
+            if os.path.exists(test_cfg):
+                os.remove(test_cfg)
 
     def test_speed_size_cli_controls(self):
-        """--speed/--size-mean set the initial averages (zero std = exact)."""
+        """[body].speed/size mean with zero std sets the initial averages."""
         test_file = 'test_body_cli.csv'
+        test_cfg = 'test_body_cli.toml'
         if os.path.exists(test_file):
             os.remove(test_file)
+        with open(test_cfg, 'w') as f:
+            f.write('''[run]
+generations = 2
+[body]
+speed_mean = 2.0
+speed_std = 0.0
+size_mean = 0.5
+size_std = 0.0
+[traits]
+init_means = [0.0, 1.0]
+init_stds = [0.1, 0.1]
+mutation_stds = [0.05, 0.05]
+optimum = [0.0, 1.0]
+''')
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--num-traits', '2',
-                        '--generations', '2', '--pop-size', '10',
-                        '--init-means', '0.0,1.0',
-                        '--init-stds', '0.1,0.1',
-                        '--mutation-stds', '0.05,0.05',
-                        '--optimum', '0.0,1.0',
-                        '--speed-mean', '2.0', '--speed-std', '0.0',
-                        '--size-mean', '0.5', '--size-std', '0.0',
-                        '--output', test_file]
+            sys.argv = ['simulate.py', '--config', test_cfg,
+                        '--pop-size', '10', '--output', test_file]
             simulate.main()
             with open(test_file, 'r') as f:
                 reader = list(csv.reader(f))
@@ -250,24 +282,30 @@ class TestSimulateFunctions(unittest.TestCase):
             self.assertAlmostEqual(float(reader[1][4]), 0.5, places=12)
         finally:
             sys.argv = old_argv
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            for path in (test_file, test_cfg):
+                if os.path.exists(path):
+                    os.remove(path)
 
     def test_main_multi_trait_creates_csv(self):
-        """Test that main() with --num-traits creates correct CSV."""
+        """Test that main() with a multi-trait config creates correct CSV."""
         test_file = 'test_multi.csv'
+        test_cfg = 'test_multi.toml'
         if os.path.exists(test_file):
             os.remove(test_file)
+        with open(test_cfg, 'w') as f:
+            f.write('''[run]
+generations = 4
+[traits]
+init_means = [0.0, 1.0]
+init_stds = [0.1, 0.1]
+mutation_stds = [0.05, 0.05]
+optimum = [0.0, 1.0]
+selection_strength = 0.0
+''')
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--num-traits', '2',
-                        '--generations', '4', '--pop-size', '6',
-                        '--init-means', '0.0,1.0',
-                        '--init-stds', '0.1,0.1',
-                        '--mutation-stds', '0.05,0.05',
-                        '--optimum', '0.0,1.0',
-                        '--selection-strength', '0.0',
-                        '--output', test_file]
+            sys.argv = ['simulate.py', '--config', test_cfg,
+                        '--pop-size', '6', '--output', test_file]
             simulate.main()
             self.assertTrue(os.path.exists(test_file))
             with open(test_file, 'r') as f:
@@ -280,8 +318,9 @@ class TestSimulateFunctions(unittest.TestCase):
                     float(value)
         finally:
             sys.argv = old_argv
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            for path in (test_file, test_cfg):
+                if os.path.exists(path):
+                    os.remove(path)
 
     @patch('matplotlib.pyplot')
     def test_live_plot_callback_called(self, mock_plt):
@@ -296,12 +335,14 @@ class TestSimulateFunctions(unittest.TestCase):
         mock_plt.ioff = MagicMock()
         mock_plt.show = MagicMock()
         test_file = 'test_lp.csv'
+        test_cfg = self._write_min_cfg('test_lp_cfg.toml', generations=2)
         if os.path.exists(test_file):
             os.remove(test_file)
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--live-plot', '--generations', '2',
-                        '--pop-size', '5', '--output', test_file]
+            sys.argv = ['simulate.py', '--config', test_cfg,
+                        '--live-plot', '--pop-size', '5',
+                        '--output', test_file]
             # window "closes" after 2 generations
             mock_plt.get_fignums.side_effect = [[1], [1], []]
             # We need to prevent actual SystemExit from shutting down; but main will not exit.
@@ -315,8 +356,9 @@ class TestSimulateFunctions(unittest.TestCase):
             mock_plt.show.assert_called()
         finally:
             sys.argv = old_argv
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            for path in (test_file, test_cfg):
+                if os.path.exists(path):
+                    os.remove(path)
 
     @patch('matplotlib.pyplot')
     @patch('simulate.np')
@@ -346,12 +388,14 @@ class TestSimulateFunctions(unittest.TestCase):
         mock_scat = MagicMock()
         mock_ax.scatter.return_value = mock_scat
         test_file = 'test_an.csv'
+        test_cfg = self._write_min_cfg('test_an_cfg.toml', generations=2)
         if os.path.exists(test_file):
             os.remove(test_file)
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--animate', '--generations', '2',
-                        '--pop-size', '3', '--output', test_file]
+            sys.argv = ['simulate.py', '--config', test_cfg,
+                        '--animate', '--pop-size', '3',
+                        '--output', test_file]
             # window "closes" after 2 generations
             mock_plt.get_fignums.side_effect = [[1], [1], []]
             simulate.main()
@@ -368,8 +412,9 @@ class TestSimulateFunctions(unittest.TestCase):
             mock_plt.show.assert_called()
         finally:
             sys.argv = old_argv
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            for path in (test_file, test_cfg):
+                if os.path.exists(path):
+                    os.remove(path)
 
     @patch('matplotlib.pyplot')
     @patch('simulate.np')
@@ -395,13 +440,19 @@ class TestSimulateFunctions(unittest.TestCase):
         mock_scat = MagicMock()
         mock_ax.scatter.return_value = mock_scat
         test_file = 'test_axis.csv'
+        test_cfg = 'test_axis_cfg.toml'
+        with open(test_cfg, 'w') as f:
+            f.write('[run]\ngenerations = 3\n'
+                    '[space]\nposition_min = 0.0\nposition_max = 10.0\n'
+                    '[traits]\ninit_means = [1.0]\ninit_stds = [0.1]\n'
+                    'mutation_stds = [0.1]\n')
         if os.path.exists(test_file):
             os.remove(test_file)
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--animate', '--generations', '3',
-                        '--pop-size', '5', '--position-min', '0.0',
-                        '--position-max', '10.0', '--output', test_file]
+            sys.argv = ['simulate.py', '--config', test_cfg,
+                        '--animate', '--pop-size', '5',
+                        '--output', test_file]
             # window "closes" after 1 generation
             mock_plt.get_fignums.side_effect = [[1], []]
             simulate.main()
@@ -410,8 +461,9 @@ class TestSimulateFunctions(unittest.TestCase):
             mock_ax.set_ylim.assert_called_once_with(-0.5, 10.5)
         finally:
             sys.argv = old_argv
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            for path in (test_file, test_cfg):
+                if os.path.exists(path):
+                    os.remove(path)
 
     def test_widen_scale_only_grows(self):
         """The fixed color scale only widens, never shrinks."""
@@ -523,12 +575,41 @@ class TestSimulateFunctions(unittest.TestCase):
                               initial_mean=1.0, initial_std=0.0)
 
     def test_missing_required_multi_trait_args(self):
-        """Test that missing --init-means when --num-traits is set triggers error."""
+        """Running without a [traits] section is rejected with a clear error."""
+        test_cfg = 'test_no_traits.toml'
+        with open(test_cfg, 'w') as f:
+            f.write('[run]\ngenerations = 2\n')
         old_argv = sys.argv.copy()
         try:
-            sys.argv = ['simulate.py', '--num-traits', '2', '--generations', '2']
+            sys.argv = ['simulate.py', '--config', test_cfg]
             with self.assertRaises(SystemExit):
                 simulate.main()
+        finally:
+            sys.argv = old_argv
+            if os.path.exists(test_cfg):
+                os.remove(test_cfg)
+
+    def test_no_config_arg_rejected(self):
+        """Running without --config prints instructions and exits."""
+        old_argv = sys.argv.copy()
+        try:
+            sys.argv = ['simulate.py']
+            with self.assertRaises(SystemExit):
+                simulate.main()
+        finally:
+            sys.argv = old_argv
+
+    def test_config_template_printed(self):
+        """--config-template prints a valid config and exits without running."""
+        old_argv = sys.argv.copy()
+        old_stdout = io.StringIO()
+        try:
+            sys.argv = ['simulate.py', '--config-template']
+            with redirect_stdout(old_stdout):
+                simulate.main()
+            text = old_stdout.getvalue()
+            self.assertIn('[traits]', text)
+            self.assertIn('init_means', text)
         finally:
             sys.argv = old_argv
 
