@@ -46,15 +46,19 @@ __all__ = [
 ]
 
 
-def _build_optimum_sliders(plt, controls, num_traits, base_optimum):
-    """Small second window with one absolute slider per trait, wired to
-    the optimum override (beacons are the headline tool; these are the
-    precision instrument). Note: closing either window ends the run —
-    the stop check counts open figures."""
+def _build_optimum_sliders(fig, controls, num_traits, base_optimum):
+    """A slider strip on the BOTTOM of the animation figure, one absolute
+    slider per trait, wired to the optimum override (beacons are the
+    headline tool; these are the precision instrument).
+
+    Sliders deliberately live on the same figure/canvas as the map: the
+    run's event pump (plt.pause in the anim handler) services the active
+    figure only, so widgets on a second window never receive drags or
+    redraws. Shrinking the map axes makes room, so widget interactivity
+    is guaranteed on every backend."""
     base = list(base_optimum) if base_optimum is not None else [0.0] * num_traits
     from matplotlib.widgets import Slider
 
-    fig = plt.figure(figsize=(4.0, 0.9 + 0.55 * num_traits))
     vector = list(base)
 
     def on_changed(idx):
@@ -64,12 +68,14 @@ def _build_optimum_sliders(plt, controls, num_traits, base_optimum):
 
         return changed
 
-    top = 0.85
-    step = 0.7 / max(num_traits, 1)
+    # per-slider vertical slice: 0.045 (0.025 browser, 0.020 gap)
+    strip = min(0.04 + 0.045 * num_traits, 0.42)
+    fig.subplots_adjust(bottom=strip)
+    y_top = strip - 0.055  # trait 0 sits just above the strip's inner edge
     for i in range(num_traits):
-        ax = fig.add_axes([0.30, top - i * step, 0.60, 0.03])
+        readout = fig.add_axes((0.25, y_top - i * 0.045, 0.55, 0.025))
         slider = Slider(
-            ax,
+            readout,
             f"trait {i}",
             base[i] - 3.0,
             base[i] + 3.0,
@@ -298,8 +304,7 @@ def main():
                     default_lifetime=cfg["lifetime"],
                 )
                 bind_interactive_controls(fig, controls)
-                if num_traits > 0:
-                    _build_optimum_sliders(plt, controls, num_traits, traits["optimum"])
+                _build_optimum_sliders(fig, controls, num_traits, traits["optimum"])
     else:
         anim_callback = None
     stats_cb = None

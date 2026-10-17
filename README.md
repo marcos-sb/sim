@@ -295,10 +295,10 @@ trait (`trait {k}` in the HUD). Player elements bypass the auto-spawn
 | `-` / `=` | slower / faster pause time (animation speed) |
 | `w` | write `snapshot.toml`: population means/stds + current multipliers + effective optimum, loadable with `--config` |
 
-The per-trait optimum can also be tuned with sliders in a small second
-window (absolute trait values; raises `[ ]` first if
-`selection_strength` is 0 — pure drift ignores the optimum). Closing
-either window ends the run, as with `--animate`.
+The per-trait optimum can also be tuned with sliders in a strip along
+the bottom of the animation window (absolute trait values; raises `[ ]`
+first if `selection_strength` is 0 — pure drift ignores the optimum).
+They share the map's canvas so their events are always serviced.
 
 ### Hunter
 

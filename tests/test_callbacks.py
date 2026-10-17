@@ -678,12 +678,37 @@ class TestInteractiveCli(unittest.TestCase):
         # three event hooks bound onto the animation canvas
         bound = {call.args[0] for call in mock_fig.canvas.mpl_connect.call_args_list}
         self.assertEqual(bound, {"key_press_event", "button_press_event", "button_release_event"})
-        # a separate slider window was opened
-        self.assertTrue(mock_plt.figure.called)
+        # the slider strip is built onto the same figure/canvas as the map
+        # (a second window would never receive the event pump's events)
+        self.assertFalse(mock_plt.figure.called)
+        self.assertTrue(mock_fig.subplots_adjust.called)
+        self.assertTrue(mock_fig.add_axes.called)
         # the gate runs a full generation when awake...
         controls.steps = 1
         self.assertTrue(gate())
         self.assertEqual(controls.steps, 0)  # ...consuming one pending step
+
+    @patch("matplotlib.widgets.Slider")
+    @patch("matplotlib.pyplot")
+    def test_interactive_slider_panel_built_on_map_figure(self, mock_plt, mock_slider):
+        """One slider per trait, built on the same figure as the map."""
+        captured, mock_fig, _ = self._run_interactive(mock_plt)
+        controls = captured["controls"]
+        # strip moved the axes bottom to make room for the widgets
+        self.assertGreater(mock_fig.subplots_adjust.call_args.kwargs["bottom"], 0.04)
+        self.assertEqual(mock_slider.call_count, 1)  # num_traits == 1
+        axes_passed = mock_slider.call_args.args[0]
+        self.assertIs(axes_passed, mock_fig.add_axes.return_value)
+        # defaults (no optimum in config): centered at 0 with ±3 range
+        self.assertEqual(mock_slider.call_args.args[1:], ("trait 0", -3.0, 3.0))
+        self.assertEqual(mock_slider.call_args.kwargs["valinit"], 0.0)
+        # a slider change pushes the overridden optimum onto the controls
+        (changed,) = mock_slider.return_value.on_changed.call_args.args
+        changed(1.75)
+        self.assertEqual(controls.optimum_override, [1.75])
+        # moving it again overrides the whole vector, not just one slot
+        changed(-0.25)
+        self.assertEqual(controls.optimum_override, [-0.25])
 
     @patch("matplotlib.widgets.Slider")
     @patch("matplotlib.pyplot")
